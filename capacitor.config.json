@@ -1,0 +1,8 @@
+{
+  "appId": "com.autoprofit.app",
+  "appName": "AutoProfit",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

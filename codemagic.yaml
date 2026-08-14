@@ -1,0 +1,26 @@
+workflows:
+  ios-workflow:
+    name: AutoProfit iOS Build
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      node: 20
+    scripts:
+      - name: Installer les dépendances
+        script: npm install
+      - name: Construire l'application web
+        script: npm run build
+      - name: Ajouter la plateforme iOS (première fois seulement)
+        script: npx cap add ios || true
+      - name: Synchroniser Capacitor
+        script: npx cap sync ios
+      - name: Construire une version de test (simulateur, non signée)
+        script: |
+          cd ios/App
+          xcodebuild -workspace App.xcworkspace -scheme App -configuration Debug -sdk iphonesimulator build
+    artifacts:
+      - build/ios/**/*.app
+    publishing:
+      email:
+        recipients:
+          - malikbenlebna7@gmail.com
