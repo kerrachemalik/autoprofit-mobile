@@ -17,16 +17,6 @@ const FontImport = () => (
   `}</style>
 );
 
-// ---------- Fictional demo vehicle database (fiche technique complète) ----------
-const VEHICLES = [
-  { id: 1, brand: "BMW", name: "BMW Série 3 320d xDrive", year: 2019, km: 125000, fuel: "Diesel", power: 190, fiscalPower: 9, gearbox: "Automatique", drivetrain: "4 roues motrices", body: "Berline", doors: 4, seats: 5, market: 19800 },
-  { id: 2, brand: "Peugeot", name: "Peugeot 3008 GT", year: 2021, km: 82000, fuel: "Diesel", power: 177, fiscalPower: 9, gearbox: "Automatique", drivetrain: "Traction", body: "SUV", doors: 5, seats: 5, market: 24000 },
-  { id: 3, brand: "Audi", name: "Audi A3 35 TDI", year: 2020, km: 96000, fuel: "Diesel", power: 150, fiscalPower: 6, gearbox: "Automatique", drivetrain: "Traction", body: "Berline compacte", doors: 5, seats: 5, market: 21500 },
-  { id: 4, brand: "Mercedes", name: "Mercedes Classe A 200d", year: 2020, km: 105000, fuel: "Diesel", power: 150, fiscalPower: 6, gearbox: "Automatique", drivetrain: "Traction", body: "Berline compacte", doors: 5, seats: 5, market: 22000 },
-  { id: 5, brand: "Volkswagen", name: "Volkswagen Golf 8", year: 2021, km: 71000, fuel: "Essence", power: 130, fiscalPower: 6, gearbox: "Automatique", drivetrain: "Traction", body: "Berline compacte", doors: 5, seats: 5, market: 20500 },
-  { id: 6, brand: "Renault", name: "Renault Clio V", year: 2022, km: 54000, fuel: "Essence", power: 100, fiscalPower: 4, gearbox: "Manuelle", drivetrain: "Traction", body: "Citadine", doors: 5, seats: 5, market: 15500 },
-];
-
 const DAMAGE_POOL = [
   { part: "Pare-choc avant", level: "orange", label: "Dégâts modérés", min: 450, max: 700 },
   { part: "Aile avant droite", level: "yellow", label: "Rayures / petite déformation", min: 250, max: 400 },
@@ -97,26 +87,16 @@ function currency2(n) {
 const FREE_WEEKLY_LIMIT = 3;
 
 // ---------------------------------------------------------------------------
-// COUCHE "PROVIDERS" — interfaces séparées comme demandé :
-//   VehicleIdentificationProvider / VehicleSpecificationsProvider
-//   MarketDataProvider / DamageAnalysisProvider
+// COUCHE "PROVIDERS" — le véhicule est saisi manuellement par l'utilisateur
+// (marque/modèle/motorisation/année/boîte/km), avec un VIN optionnel qui
+// pré-remplit ce même formulaire via l'API gratuite NHTSA (backend).
 //
-// En production, ces fonctions doivent appeler TON BACKEND (jamais une API
-// tierce directement depuis le frontend, pour ne pas exposer de clé) :
-//   - identification + fiche technique -> revendeur d'API plaque SIV
-//     (ex: api-plaque-immatriculation.com, ~100 champs, dès 0€ pour tester)
-//   - kilométrage -> AUCUNE source publique fiable pour un acheteur tiers
-//     (HistoVec existe mais n'est consultable que par le propriétaire du
-//     véhicule) : c'est la seule donnée que l'utilisateur doit saisir.
-//   - prix du marché -> ta base de comparables ou une cote licenciée
-//     (Argus / AAA Data), voir .env.example.
-//
-// Tant qu'aucun provider réel n'est configuré, tout est clairement marqué
-// "démonstration" (isDemo: true) et jamais présenté comme une vraie donnée.
+// - kilométrage -> AUCUNE source publique fiable pour un acheteur tiers
+//   (HistoVec existe mais n'est consultable que par le propriétaire du
+//   véhicule) : c'est une donnée que l'utilisateur doit toujours saisir.
+// - prix du marché -> comparables réels (La Centrale, via le backend) ;
+//   si aucun comparable n'est trouvé, estimation neutre marquée isDemo: true.
 // ---------------------------------------------------------------------------
-
-const REAL_VEHICLE_PROVIDER_CONFIGURED = false;
-const REAL_MARKET_PROVIDER_CONFIGURED = false;
 
 function hashString(str) {
   let h = 0;
@@ -124,49 +104,64 @@ function hashString(str) {
   return h;
 }
 
-// VehicleIdentificationProvider + VehicleSpecificationsProvider
-async function identifyVehicle(rawInput, userKm) {
-  if (REAL_VEHICLE_PROVIDER_CONFIGURED) {
-    // const res = await fetch(`/api/vehicle-lookup?plate=${encodeURIComponent(rawInput)}`);
-    // const data = await res.json();
-    // return { ...data, km: userKm || null, isDemo: false };
+// Recherche de comparables réels (La Centrale, via le backend) pour estimer
+// la cote du véhicule. Si aucun comparable n'est trouvé (marque/modèle trop
+// rares, panne fournisseur...), on retombe sur une estimation neutre plutôt
+// que de bloquer l'utilisateur — toujours marquée isDemo: true dans ce cas.
+const FUEL_TO_SEARCH_ENERGY = { Essence: "ess", Diesel: "dies" };
+
+async function fetchMarketData(vehicle, token) {
+  try {
+    const energy = FUEL_TO_SEARCH_ENERGY[vehicle.fuel];
+    const res = await apiFetch("/api/search-cars", {
+      method: "POST",
+      token,
+      body: {
+        make: vehicle.brand,
+        model: vehicle.model,
+        ...(energy ? { energy } : {}),
+        yearMin: vehicle.year - 1,
+        yearMax: vehicle.year + 1,
+        targetMileage: vehicle.km,
+        limit: 20,
+      },
+    });
+    if (!res.count) throw new Error("Aucun comparable trouvé");
+    const mean = res.stats.estimatedValue ?? res.stats.averagePrice;
+    const comparables = res.listings.slice(0, 5).map((l) => ({
+      label: `${l.make} ${l.model} ${l.version || ""}`.trim(),
+      year: l.year, km: l.mileage, price: l.price, location: l.department,
+    }));
+    const confidence = res.count >= 20 ? "élevée" : res.count >= 8 ? "moyenne" : "faible";
+    return { count: res.count, mean, median: mean, min: res.stats.minPrice, max: res.stats.maxPrice, confidence, comparables, isDemo: false };
+  } catch (e) {
+    // Estimation neutre : on ne peut pas laisser un utilisateur sans aucune
+    // fourchette de prix, mais on le marque clairement comme non fiable.
+    const fallbackMean = 12000;
+    return { count: 0, mean: fallbackMean, median: fallbackMean, min: Math.round(fallbackMean * 0.8), max: Math.round(fallbackMean * 1.2), confidence: "faible", comparables: [], isDemo: true };
   }
-  const input = (rawInput || "").trim() || "AA-000-AA";
-  const idx = hashString(input.toUpperCase()) % VEHICLES.length;
-  const base = VEHICLES[idx];
-  const km = userKm && userKm > 0 ? userKm : base.km;
-  return { ...base, plate: input.toUpperCase(), km, referenceKm: base.km, referenceMarket: base.market, isDemo: true };
 }
 
-// MarketDataProvider
-async function getMarketData(vehicle) {
-  if (REAL_MARKET_PROVIDER_CONFIGURED) {
-    // const res = await fetch(`/api/market-data`, { method: "POST", body: JSON.stringify(vehicle) });
-    // return await res.json();
-  }
-  const kmDelta = vehicle.km - vehicle.referenceKm;
-  const ratePerKm = vehicle.referenceMarket / 220000;
-  const kmAdjustment = -kmDelta * ratePerKm;
-  const adjustedMarket = Math.round(Math.max(vehicle.referenceMarket * 0.3, vehicle.referenceMarket + kmAdjustment));
-  vehicle.market = adjustedMarket;
-
-  const seed = hashString(vehicle.name + vehicle.year + vehicle.km);
-  const count = 20 + (seed % 40);
-  const mean = adjustedMarket;
-  const median = Math.round(mean * (0.97 + (seed % 10) / 200));
-  const min = Math.round(mean * 0.8);
-  const max = Math.round(mean * 1.22);
-  const confidence = count > 40 ? "élevée" : count > 20 ? "moyenne" : "faible";
-  const comparables = [0, 1, 2].map((i) => {
-    const jitter = ((seed >> (i * 4)) % 15) - 7;
-    return {
-      label: vehicle.name, year: vehicle.year - (i === 2 ? 1 : 0),
-      km: Math.max(0, vehicle.km + jitter * 900),
-      price: Math.round(mean * (1 + jitter / 100)),
-      location: ["Lyon", "Villeurbanne", "Saint-Étienne"][i],
-    };
-  });
-  return { count, mean, median, min, max, confidence, comparables, isDemo: true };
+// Décode un VIN via le backend (NHTSA, gratuit) et pré-remplit le formulaire
+// manuel — les CV fiscaux ne sont jamais fournis par le VIN (norme US), donc
+// laissés à compléter par l'utilisateur plutôt que d'être devinés.
+async function decodeVin(vin, token) {
+  const data = await apiFetch("/api/vehicle/lookup", { method: "POST", token, body: { plate: vin } });
+  if (data.isDemo) throw new Error("VIN non reconnu");
+  const gearboxRaw = (data.boite || "").toLowerCase();
+  const gearbox = gearboxRaw.includes("manual") ? "Manuelle" : gearboxRaw.includes("auto") ? "Automatique" : null;
+  const result = {
+    brand: data.marque || "",
+    model: data.modele || "",
+    motorisation: data.cylindree ? `${data.cylindree}L ${data.puissanceCh ? data.puissanceCh + "ch" : ""}`.trim() : "",
+    fuel: /diesel/i.test(data.carburant || "") ? "Diesel" : /hybrid/i.test(data.carburant || "") ? "Hybride" : /electric/i.test(data.carburant || "") ? "Électrique" : "Essence",
+    power: Number(data.puissanceCh) || "",
+    fiscalPower: "",
+    year: Number(data.annee) || "",
+  };
+  // Ne pas écraser la boîte par défaut du formulaire si le VIN ne la précise pas.
+  if (gearbox) result.gearbox = gearbox;
+  return result;
 }
 
 const LEGAL_DOCS = {
@@ -181,7 +176,7 @@ Contact : [e-mail de contact à compléter].`,
   },
   cgu: {
     title: "Conditions Générales d'Utilisation",
-    text: `AutoProfit permet d'analyser un véhicule d'occasion (plaque ou VIN) pour obtenir une estimation de valeur de marché, un prix d'achat maximum conseillé et une marge potentielle. Ces estimations sont indicatives.
+    text: `AutoProfit permet d'analyser un véhicule d'occasion (détails saisis manuellement ou VIN) pour obtenir une estimation de valeur de marché, un verdict IA sur la qualité du deal, un prix d'achat maximum conseillé et une marge potentielle. Ces estimations sont indicatives.
 
 L'accès aux fonctionnalités d'analyse nécessite un compte (e-mail + mot de passe). Formule gratuite : 3 analyses par semaine. Formule Premium : analyses illimitées.
 
@@ -197,9 +192,9 @@ Résiliation possible à tout moment depuis les réglages du compte Apple, effec
   },
   privacy: {
     title: "Politique de confidentialité",
-    text: `Données collectées : e-mail, mot de passe (haché, jamais en clair), plaque/VIN saisi, kilométrage, historique des analyses, statut d'abonnement.
+    text: `Données collectées : e-mail, mot de passe (haché, jamais en clair), détails du véhicule saisis (marque, modèle, VIN le cas échéant), kilométrage, historique des analyses, statut d'abonnement.
 
-La plaque d'immatriculation peut permettre d'identifier indirectement le titulaire d'un véhicule : elle est traitée comme une donnée à caractère personnel au sens du RGPD.
+Un VIN identifie un véhicule précis et peut, combiné à d'autres informations, permettre de remonter indirectement à son titulaire : il est traité comme une donnée à caractère personnel au sens du RGPD.
 
 Ces données sont conservées tant que le compte est actif. Aucune vente ni partage à des fins publicitaires. Les données de paiement sont traitées exclusivement par Apple.
 
@@ -375,9 +370,22 @@ const VERDICT_META = {
     text: () => `À ce prix d'achat, la marge ne couvre pas le risque pris. Baisse fortement le prix ou passe ton chemin.` },
 };
 
+// Verdict IA (achat-revente) — distinct de VERDICT_META ci-dessus qui reflète
+// uniquement le calcul de marge. Celui-ci ajoute l'avis qualitatif de l'IA :
+// qualité du deal, facilité de revente du modèle, risques de fiabilité connus.
+const AI_VERDICT_META = {
+  excellente_affaire: { label: "Excellente affaire", color: "#22D67A" },
+  bonne_affaire: { label: "Bonne affaire", color: "#3FBF7F" },
+  affaire_correcte: { label: "Affaire correcte", color: "#8CC9A6" },
+  a_negocier: { label: "À négocier", color: "#E8A33D" },
+  a_eviter: { label: "À éviter", color: "#E5484D" },
+};
+const RESALE_META = { elevee: { label: "Élevée", color: "#3FBF7F" }, moyenne: { label: "Moyenne", color: "#E8A33D" }, faible: { label: "Faible", color: "#E5484D" } };
+const RISK_META = { faible: { label: "Faible", color: "#3FBF7F" }, modere: { label: "Modéré", color: "#E8A33D" }, eleve: { label: "Élevé", color: "#E5484D" } };
+
 // ---------- Shared bits ----------
-const Card = ({ children, className = "", style = {} }) => (
-  <div className={`rounded-2xl ${className}`} style={{ background: "#141C18", border: "1px solid #232E29", ...style }}>{children}</div>
+const Card = ({ children, className = "", style = {}, onClick }) => (
+  <div onClick={onClick} className={`rounded-2xl ${className}`} style={{ background: "#141C18", border: "1px solid #232E29", ...style }}>{children}</div>
 );
 
 const PrimaryButton = ({ children, onClick, className = "", disabled, style = {} }) => (
@@ -396,23 +404,6 @@ const GhostButton = ({ children, onClick, className = "" }) => (
   </button>
 );
 
-function ScoreGauge({ score, color, size = 108 }) {
-  const stroke = 10;
-  const r = (size - stroke) / 2;
-  const c = 2 * Math.PI * r;
-  const offset = c - (score / 100) * c;
-  return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-      <circle cx={size / 2} cy={size / 2} r={r} stroke="#232E29" strokeWidth={stroke} fill="none" />
-      <circle cx={size / 2} cy={size / 2} r={r} stroke={color} strokeWidth={stroke} fill="none"
-        strokeDasharray={c} strokeDashoffset={offset} strokeLinecap="round"
-        transform={`rotate(-90 ${size / 2} ${size / 2})`} style={{ transition: "stroke-dashoffset 0.6s ease" }} />
-      <text x="50%" y="47%" textAnchor="middle" className="ap-display" fill="#EDF2EF" fontSize="26" fontWeight="700">{score}</text>
-      <text x="50%" y="64%" textAnchor="middle" fill="#8C9992" fontSize="11">/ 100</text>
-    </svg>
-  );
-}
-
 function Spinner({ size = 16, color = "#08120D" }) {
   return (
     <span
@@ -426,6 +417,30 @@ function Spinner({ size = 16, color = "#08120D" }) {
         animation: "ap-spin 0.7s linear infinite",
       }}
     />
+  );
+}
+
+// Écran de chargement plein cadre, réutilisable partout où une requête prend
+// du temps (identification véhicule, prix du marché...). Les messages
+// défilent pour que l'attente reste lisible sur les requêtes plus longues.
+function LoadingScreen({ title = "Analyse en cours...", messages }) {
+  const [msgIndex, setMsgIndex] = useState(0);
+  useEffect(() => {
+    if (!messages || messages.length < 2) return;
+    const id = setInterval(() => setMsgIndex((i) => (i + 1) % messages.length), 1800);
+    return () => clearInterval(id);
+  }, [messages]);
+
+  return (
+    <div className="absolute inset-0 z-50 flex flex-col items-center justify-center px-10 text-center" style={{ background: "#0B0F0D" }}>
+      <Spinner size={40} color="#3FBF7F" />
+      <p className="ap-display text-[16px] font-semibold mt-5" style={{ color: "#EDF2EF" }}>{title}</p>
+      {messages && (
+        <p className="text-[13px] mt-2" style={{ color: "#8C9992", animation: "ap-pulse 1.4s ease-in-out infinite" }}>
+          {messages[msgIndex]}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -509,7 +524,7 @@ function HomeScreen({ go, isPremium, weeklyUsed }) {
           Ton prochain achat, <span style={{ color: "#3FBF7F" }}>calculé</span> avant d'être signé.
         </h1>
         <p className="text-[15px] leading-relaxed mb-8" style={{ color: "#8C9992" }}>
-          Scanne ou saisis une plaque. AutoProfit identifie le véhicule, trouve sa valeur de marché et calcule ta marge — automatiquement.
+          Renseigne les détails d'un véhicule (ou son VIN). AutoProfit trouve sa valeur de marché, donne un verdict IA et calcule ta marge — automatiquement.
         </p>
         <PrimaryButton onClick={() => go("scan")}>Analyser un véhicule</PrimaryButton>
         <p className="text-[12px] text-center mt-3" style={{ color: "#6B776F" }}>
@@ -519,8 +534,8 @@ function HomeScreen({ go, isPremium, weeklyUsed }) {
 
       <div className="px-6 pt-8 space-y-4">
         {[
-          { n: "01", t: "Identifier", d: "Plaque ou numéro VIN", Icon: ScanLine },
-          { n: "02", t: "Analyser", d: "Fiche technique + valeur de marché automatiques", Icon: Gauge },
+          { n: "01", t: "Identifier", d: "Détails du véhicule ou VIN", Icon: ScanLine },
+          { n: "02", t: "Analyser", d: "Cote réelle du marché + verdict IA", Icon: Gauge },
           { n: "03", t: "Décider", d: "Prix d'achat maximum + marge potentielle", Icon: TrendingUp },
         ].map((s) => (
           <Card key={s.n} className="p-4 flex items-center gap-4">
@@ -549,49 +564,147 @@ function HomeScreen({ go, isPremium, weeklyUsed }) {
   );
 }
 
-function ScanScreen({ go, onAnalyze, isPremium, weeklyUsed, limitReached, authUser, authLoading }) {
-  const [tab, setTab] = useState("plate");
-  const [value, setValue] = useState("");
+const EMPTY_VEHICLE_FORM = { brand: "", model: "", motorisation: "", fuel: "Essence", power: "", fiscalPower: "", year: "", gearbox: "Manuelle" };
+
+// Marques les plus courantes sur le marché français de l'occasion — liste
+// réelle et curatée (pas la liste mondiale NHTSA de ~10 000 constructeurs,
+// trop bruitée pour une saisie rapide sur le terrain).
+const COMMON_BRANDS = [
+  "Renault", "Peugeot", "Citroën", "Volkswagen", "BMW", "Mercedes-Benz", "Audi", "Ford", "Toyota",
+  "Nissan", "Opel", "Fiat", "Seat", "Škoda", "Dacia", "Hyundai", "Kia", "Volvo", "Mini", "Mazda",
+  "Honda", "Suzuki", "Jeep", "Land Rover", "Jaguar", "Porsche", "Tesla", "Alfa Romeo", "Mitsubishi",
+  "Subaru", "Lexus", "DS", "Smart", "Abarth", "Chevrolet", "Chrysler", "Alpine", "Cupra",
+];
+
+// Sigles moteur qui identifient sans ambiguïté un diesel chez les
+// constructeurs présents sur le marché français — évite à l'utilisateur de
+// resaisir une info déjà contenue dans la motorisation (ex: "1.5 dCi 90").
+const DIESEL_MOTOR_HINTS = /\b(dci|hdi|bluehdi|tdi|cdi|crdi|jtd|multijet|d-4d|dtec|cdti|tdci|dti)\b/i;
+
+function inferFuelFromMotorisation(text) {
+  if (!text) return null;
+  return DIESEL_MOTOR_HINTS.test(text) ? "Diesel" : null;
+}
+
+// Estimation des CV fiscaux à partir de la puissance (ch) : la formule
+// officielle dépend aussi du CO2 (indisponible ici), donc cette table par
+// palier de puissance est une ESTIMATION usuelle, pas une valeur garantie —
+// le champ reste éditable pour que l'utilisateur corrige avec sa carte grise.
+function estimateFiscalPower(powerCh) {
+  const p = Number(powerCh);
+  if (!p || p <= 0) return "";
+  if (p < 60) return 3;
+  if (p < 90) return 4;
+  if (p < 110) return 5;
+  if (p < 140) return 6;
+  if (p < 170) return 7;
+  if (p < 200) return 9;
+  if (p < 250) return 10;
+  return 12;
+}
+
+// Modèles réels les plus vendus en occasion en France, par marque. La base
+// NHTSA (déjà utilisée pour le décodage VIN) ne couvre que le marché
+// américain — elle ne connaît ni la Clio, ni la 208, ni la Golf — donc
+// inutilisable ici. Cette liste reste une vraie nomenclature de modèles
+// commercialisés, pas des noms inventés.
+const BRAND_MODELS = {
+  Renault: ["Clio", "Captur", "Megane", "Scenic", "Twingo", "Kadjar", "Talisman", "Zoe", "Austral", "Arkana"],
+  Peugeot: ["208", "2008", "308", "3008", "5008", "508", "108", "Rifter", "Partner"],
+  "Citroën": ["C3", "C3 Aircross", "C4", "C4 Picasso", "C5 Aircross", "Berlingo", "C1", "C5X"],
+  Volkswagen: ["Golf", "Polo", "Tiguan", "Passat", "T-Roc", "T-Cross", "Touran", "Touareg", "ID.3", "ID.4"],
+  BMW: ["Série 1", "Série 2", "Série 3", "Série 4", "Série 5", "X1", "X2", "X3", "X5", "X6"],
+  "Mercedes-Benz": ["Classe A", "Classe B", "Classe C", "Classe E", "GLA", "GLB", "GLC", "GLE", "CLA"],
+  Audi: ["A1", "A3", "A4", "A5", "A6", "Q2", "Q3", "Q5", "Q7", "TT"],
+  Ford: ["Fiesta", "Focus", "Puma", "Kuga", "Ecosport", "Mondeo", "Ka+"],
+  Toyota: ["Yaris", "Corolla", "C-HR", "RAV4", "Aygo", "Yaris Cross", "Prius"],
+  Nissan: ["Qashqai", "Juke", "Micra", "X-Trail", "Leaf", "Note"],
+  Opel: ["Corsa", "Astra", "Crossland", "Grandland", "Mokka", "Insignia"],
+  Fiat: ["500", "Panda", "Tipo", "500X", "500L"],
+  Seat: ["Ibiza", "Leon", "Arona", "Ateca", "Tarraco"],
+  "Škoda": ["Fabia", "Octavia", "Kamiq", "Karoq", "Scala", "Superb"],
+  Dacia: ["Sandero", "Duster", "Spring", "Jogger", "Logan"],
+  Hyundai: ["i10", "i20", "i30", "Tucson", "Kona", "Santa Fe"],
+  Kia: ["Picanto", "Rio", "Ceed", "Sportage", "Niro", "Sorento"],
+  Volvo: ["XC40", "XC60", "XC90", "V60", "V90", "S60"],
+  Mini: ["Cooper", "Countryman", "Clubman"],
+  Mazda: ["CX-3", "CX-5", "CX-30", "MX-5", "Mazda2", "Mazda3"],
+  Honda: ["Civic", "CR-V", "Jazz", "HR-V"],
+  Suzuki: ["Swift", "Vitara", "S-Cross", "Ignis"],
+  Jeep: ["Compass", "Renegade", "Cherokee"],
+  Tesla: ["Model 3", "Model Y", "Model S", "Model X"],
+};
+
+function suggestModels(brand, query) {
+  const list = BRAND_MODELS[brand] || [];
+  const q = query.trim().toLowerCase();
+  return list.filter((m) => m.toLowerCase().includes(q)).slice(0, 6);
+}
+
+function ScanScreen({ go, onAnalyze, isPremium, weeklyUsed, limitReached, authUser, authLoading, authToken }) {
+  const [tab, setTab] = useState("manual");
+  const [form, setForm] = useState(EMPTY_VEHICLE_FORM);
   const [km, setKm] = useState("");
-  const [cameraOpen, setCameraOpen] = useState(false);
-  const [cameraError, setCameraError] = useState("");
+  const [vin, setVin] = useState("");
+  const [vinLoading, setVinLoading] = useState(false);
+  const [vinError, setVinError] = useState("");
+  const [vinFilled, setVinFilled] = useState(false);
   const [loading, setLoading] = useState(false);
-  const videoRef = useRef(null);
-  const streamRef = useRef(null);
+  const [brandOpen, setBrandOpen] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
 
-  useEffect(() => {
-    if (!cameraOpen) return;
-    let cancelled = false;
-    setCameraError("");
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraError("La caméra n'est pas accessible dans cet environnement. Utilise la saisie manuelle ci-dessous.");
-      return;
+  // Déductions automatiques à partir de données réelles/déterministes :
+  // motorisation -> carburant (sigle diesel sans ambiguïté), puissance -> CV
+  // fiscaux (estimation par palier, corrigible). Jamais de faux positif si
+  // aucune règle ne s'applique — le champ reste alors tel quel.
+  const setField = (key, val) => {
+    setForm((prev) => {
+      const next = { ...prev, [key]: val };
+      if (key === "motorisation") {
+        const inferredFuel = inferFuelFromMotorisation(val);
+        if (inferredFuel) next.fuel = inferredFuel;
+      }
+      if (key === "power" && !prev.fiscalPower) {
+        next.fiscalPower = estimateFiscalPower(val);
+      }
+      if (key === "brand" && val !== prev.brand) {
+        next.model = "";
+      }
+      return next;
+    });
+  };
+
+  const brandSuggestions = COMMON_BRANDS.filter((b) => b.toLowerCase().includes(form.brand.trim().toLowerCase())).slice(0, 6);
+  const modelSuggestions = suggestModels(form.brand, form.model);
+
+  const decode = async () => {
+    if (!vin.trim()) return;
+    setVinLoading(true);
+    setVinError("");
+    try {
+      const decoded = await decodeVin(vin.trim(), authToken);
+      setForm((prev) => ({ ...prev, ...decoded }));
+      setVinFilled(true);
+      setTab("manual");
+    } catch (e) {
+      setVinError("VIN non reconnu — saisis les détails manuellement ci-contre.");
+    } finally {
+      setVinLoading(false);
     }
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
-      .then((stream) => {
-        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
-        streamRef.current = stream;
-        if (videoRef.current) videoRef.current.srcObject = stream;
-      })
-      .catch(() => {
-        setCameraError("Accès à la caméra refusé ou indisponible. Utilise la saisie manuelle ci-dessous.");
-      });
-    return () => {
-      cancelled = true;
-      if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
-    };
-  }, [cameraOpen]);
+  };
 
-  const closeCamera = () => setCameraOpen(false);
+  const formValid = form.brand.trim() && form.model.trim() && Number(form.power) > 0 && Number(form.fiscalPower) > 0 && Number(form.year) > 1980 && Number(km) > 0;
 
-  const runAnalyze = async (input) => {
+  const runAnalyze = async () => {
     setLoading(true);
-    // Petit délai minimum pour que l'animation de chargement soit visible,
-    // et pour refléter le temps réel que prendront les vraies API une fois branchées.
-    await Promise.all([
-      onAnalyze(input, Number(km) || 0),
-      new Promise((resolve) => setTimeout(resolve, 900)),
-    ]);
+    // onAnalyze navigue lui-même vers l'écran de résultat une fois terminé —
+    // l'écran de chargement reste donc affiché exactement le temps réel des
+    // requêtes (recherche de comparables réels), pas une durée fixe ici.
+    await onAnalyze({
+      brand: form.brand.trim(), model: form.model.trim(), motorisation: form.motorisation.trim(),
+      fuel: form.fuel, power: Number(form.power), fiscalPower: Number(form.fiscalPower),
+      year: Number(form.year), gearbox: form.gearbox, km: Number(km),
+    });
     setLoading(false);
   };
 
@@ -627,76 +740,120 @@ function ScanScreen({ go, onAnalyze, isPremium, weeklyUsed, limitReached, authUs
     );
   }
 
+  const inputStyle = { background: "#141C18", border: "1px solid #232E29", color: "#EDF2EF" };
+  const fieldClass = "w-full rounded-xl px-3.5 py-3 text-[14px] outline-none appearance-none";
+
   return (
     <div className="pb-24">
+      {loading && (
+        <LoadingScreen
+          title="Analyse en cours..."
+          messages={["Recherche d'annonces comparables...", "Calcul de la cote du véhicule...", "Analyse du potentiel de revente..."]}
+        />
+      )}
       <Header title="Analyse ton véhicule" onBack={() => go("home")} />
       <div className="px-5 space-y-5">
         <QuotaBadge isPremium={isPremium} used={weeklyUsed} />
-        <DemoBanner text="Mode démonstration : aucun fournisseur réel n'est encore branché. Une fois connecté (voir .env.example), la plaque suffira à tout identifier automatiquement — comme ici." />
 
         <div className="flex rounded-xl p-1" style={{ background: "#141C18", border: "1px solid #232E29" }}>
-          {["plate", "vin"].map((k) => (
-            <button key={k} onClick={() => { setTab(k); setCameraOpen(false); setValue(""); }}
+          {[["manual", "Détails du véhicule"], ["vin", "VIN"]].map(([k, label]) => (
+            <button key={k} onClick={() => setTab(k)}
               className="flex-1 py-2 rounded-lg text-[13px] font-medium"
               style={{ background: tab === k ? "#1B2420" : "transparent", color: tab === k ? "#3FBF7F" : "#8C9992" }}>
-              {k === "plate" ? "Plaque" : "VIN"}
+              {label}
             </button>
           ))}
         </div>
 
-        <div>
-          <label className="text-[13px] font-medium block mb-2" style={{ color: "#8C9992" }}>
-            {tab === "plate" ? "Plaque d'immatriculation" : "Numéro VIN"}
-          </label>
-          <div className="flex gap-2">
-            <input value={value} onChange={(e) => setValue(e.target.value.toUpperCase())}
-              placeholder={tab === "plate" ? "AA-123-AA" : "VF3XXXXXXXXXXXXXX"}
-              className="flex-1 rounded-xl px-4 py-3.5 text-[15px] outline-none"
-              style={{ background: "#141C18", border: "1px solid #232E29", color: "#EDF2EF" }} />
-            <button onClick={() => setCameraOpen(true)} className="w-14 rounded-xl flex items-center justify-center shrink-0"
-              style={{ background: "#1B2420", border: "1px solid #2B372F" }}>
-              <Camera size={19} color="#3FBF7F" />
-            </button>
-          </div>
-        </div>
-
-        {cameraOpen && (
-          <Card className="p-6 flex flex-col items-center gap-4">
-            <div className="w-full flex items-center justify-between">
-              <span className="text-[12px] font-medium" style={{ color: "#8C9992" }}>
-                Caméra — {tab === "plate" ? "plaque" : "VIN"}
-              </span>
-              <button onClick={closeCamera}><X size={16} color="#6B776F" /></button>
-            </div>
-            <div className="w-full aspect-video rounded-xl overflow-hidden flex items-center justify-center relative" style={{ background: "#0B0F0D", border: "1px dashed #2B372F" }}>
-              {cameraError ? (
-                <div className="text-center px-4">
-                  <CameraOff size={26} color="#E5484D" className="mx-auto mb-2" />
-                  <span className="text-[12px]" style={{ color: "#8C9992" }}>{cameraError}</span>
-                </div>
-              ) : (
-                <>
-                  <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-                  <div className="absolute inset-6 rounded-lg pointer-events-none" style={{ border: "2px solid rgba(63,191,127,0.6)" }} />
-                </>
-              )}
-            </div>
-            {!cameraError && (
-              <p className="text-[11px] text-center leading-snug" style={{ color: "#6B776F" }}>
-                La caméra s'active réellement, mais la lecture automatique (OCR) n'est pas encore branchée — capture, puis l'app tire une fiche de démonstration.
-              </p>
-            )}
-            <PrimaryButton onClick={() => runAnalyze(`${tab.toUpperCase()}-CAM-${Date.now()}`)} disabled={loading || !(Number(km) > 0)}>
-              {loading ? <span className="flex items-center justify-center gap-2"><Spinner /> Analyse en cours...</span> : cameraError ? "Simuler un scan" : "Capturer et analyser"}
+        {tab === "vin" ? (
+          <Card className="p-4 space-y-3">
+            <label className="text-[13px] font-medium block" style={{ color: "#8C9992" }}>Numéro VIN (17 caractères)</label>
+            <input value={vin} onChange={(e) => setVin(e.target.value.toUpperCase())} placeholder="VF3XXXXXXXXXXXXXX"
+              className={fieldClass} style={inputStyle} />
+            <PrimaryButton onClick={decode} disabled={!vin.trim() || vinLoading}>
+              {vinLoading ? <span className="flex items-center justify-center gap-2"><Spinner /> Décodage...</span> : "Décoder le VIN"}
             </PrimaryButton>
-            {loading && (
-              <p className="text-[11px] text-center" style={{ color: "#6B776F", animation: "ap-pulse 1.4s ease-in-out infinite" }}>
-                Identification du véhicule et recherche du prix du marché...
+            {vinError && <p className="text-[11px]" style={{ color: "#E5484D" }}>{vinError}</p>}
+            <p className="text-[11px] leading-snug" style={{ color: "#6B776F" }}>
+              Décodage gratuit via la base officielle NHTSA. Les champs de l'onglet "Détails du véhicule" seront pré-remplis — vérifie-les (les CV fiscaux ne sont jamais fournis par le VIN).
+            </p>
+          </Card>
+        ) : (
+          <Card className="p-4 space-y-3">
+            {vinFilled && (
+              <p className="text-[11px] rounded-lg px-2.5 py-2" style={{ color: "#3FBF7F", background: "rgba(63,191,127,0.1)" }}>
+                Champs pré-remplis depuis le VIN — vérifie-les, surtout les CV fiscaux.
               </p>
             )}
-            {!(Number(km) > 0) && (
-              <p className="text-[11px] text-center" style={{ color: "#E8A33D" }}>Renseigne le kilométrage ci-dessous avant de continuer.</p>
-            )}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="relative">
+                <label className="text-[11px] font-medium block mb-1" style={{ color: "#8C9992" }}>Marque</label>
+                <input value={form.brand} onChange={(e) => setField("brand", e.target.value)}
+                  onFocus={() => setBrandOpen(true)} onBlur={() => setTimeout(() => setBrandOpen(false), 150)}
+                  placeholder="Renault" className={fieldClass} style={inputStyle} autoComplete="off" />
+                {brandOpen && form.brand.trim() && brandSuggestions.length > 0 && (
+                  <div className="absolute left-0 right-0 mt-1 rounded-xl overflow-hidden z-10" style={{ background: "#1B2420", border: "1px solid #2B372F" }}>
+                    {brandSuggestions.map((b) => (
+                      <button key={b} type="button" onMouseDown={() => { setField("brand", b); setBrandOpen(false); }}
+                        className="w-full text-left px-3.5 py-2 text-[13px]" style={{ color: "#EDF2EF" }}>
+                        {b}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="relative">
+                <label className="text-[11px] font-medium block mb-1" style={{ color: "#8C9992" }}>Modèle</label>
+                <input value={form.model} onChange={(e) => setField("model", e.target.value)}
+                  onFocus={() => setModelOpen(true)} onBlur={() => setTimeout(() => setModelOpen(false), 150)}
+                  placeholder="Clio" className={fieldClass} style={inputStyle} autoComplete="off" />
+                {modelOpen && modelSuggestions.length > 0 && (
+                  <div className="absolute left-0 right-0 mt-1 rounded-xl overflow-hidden z-10" style={{ background: "#1B2420", border: "1px solid #2B372F" }}>
+                    {modelSuggestions.map((m) => (
+                      <button key={m} type="button" onMouseDown={() => { setField("model", m); setModelOpen(false); }}
+                        className="w-full text-left px-3.5 py-2 text-[13px]" style={{ color: "#EDF2EF" }}>
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <p className="text-[10px] -mt-1.5" style={{ color: "#6B776F" }}>Sans le numéro de génération (ex: "Clio", pas "Clio 5") — ça aide à trouver de vraies annonces comparables.</p>
+            <div>
+              <label className="text-[11px] font-medium block mb-1" style={{ color: "#8C9992" }}>Motorisation</label>
+              <input value={form.motorisation} onChange={(e) => setField("motorisation", e.target.value)} placeholder="1.5 dCi 100" className={fieldClass} style={inputStyle} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[11px] font-medium block mb-1" style={{ color: "#8C9992" }}>Carburant</label>
+                <select value={form.fuel} onChange={(e) => setField("fuel", e.target.value)} className={fieldClass} style={inputStyle}>
+                  {["Essence", "Diesel", "Hybride", "Électrique"].map((f) => (<option key={f} value={f}>{f}</option>))}
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] font-medium block mb-1" style={{ color: "#8C9992" }}>Puissance (ch)</label>
+                <input type="number" inputMode="numeric" value={form.power} onChange={(e) => setField("power", e.target.value)} placeholder="100" className={fieldClass} style={inputStyle} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[11px] font-medium block mb-1" style={{ color: "#8C9992" }}>
+                  CV fiscaux {form.power && form.fiscalPower === estimateFiscalPower(form.power) && <span style={{ color: "#6B776F", fontWeight: 400 }}>(estimé)</span>}
+                </label>
+                <input type="number" inputMode="numeric" value={form.fiscalPower} onChange={(e) => setField("fiscalPower", e.target.value)} placeholder="4" className={fieldClass} style={inputStyle} />
+              </div>
+              <div>
+                <label className="text-[11px] font-medium block mb-1" style={{ color: "#8C9992" }}>Année</label>
+                <input type="number" inputMode="numeric" value={form.year} onChange={(e) => setField("year", e.target.value)} placeholder="2021" className={fieldClass} style={inputStyle} />
+              </div>
+            </div>
+            <div>
+              <label className="text-[11px] font-medium block mb-1" style={{ color: "#8C9992" }}>Boîte</label>
+              <select value={form.gearbox} onChange={(e) => setField("gearbox", e.target.value)} className={fieldClass} style={inputStyle}>
+                {["Manuelle", "Automatique"].map((g) => (<option key={g} value={g}>{g}</option>))}
+              </select>
+            </div>
           </Card>
         )}
 
@@ -710,20 +867,18 @@ function ScanScreen({ go, onAnalyze, isPremium, weeklyUsed, limitReached, authUs
           </p>
         </div>
 
-        <PrimaryButton onClick={() => runAnalyze(value)} disabled={!value.trim() || !(Number(km) > 0) || loading}>
-          {loading ? <span className="flex items-center justify-center gap-2"><Spinner /> Analyse en cours...</span> : !(Number(km) > 0) ? "Renseigne le kilométrage" : "Analyser le véhicule"}
+        <PrimaryButton onClick={runAnalyze} disabled={!formValid || loading}>
+          {formValid ? "Analyser le véhicule" : "Complète les détails du véhicule"}
         </PrimaryButton>
-        {loading && (
-          <p className="text-[11px] text-center" style={{ color: "#6B776F", animation: "ap-pulse 1.4s ease-in-out infinite" }}>
-            Identification du véhicule et recherche du prix du marché...
-          </p>
-        )}
       </div>
     </div>
   );
 }
 
-function ResultScreen({ vehicle, marketData, go, purchasePrice, setPurchasePrice, repairCosts, repairCostsMin, repairCostsMax, riskDiscount, onSave, cgRegion, setCgRegion, cgIsPro, setCgIsPro, problemsCount, problemsRepairMid, photosCount, photosRepairMid }) {
+function ResultScreen({ vehicle, marketData, go, purchasePrice, setPurchasePrice, repairCosts, repairCostsMin, repairCostsMax, riskDiscount, onSave, cgRegion, setCgRegion, cgIsPro, setCgIsPro, problemsCount, problemsRepairMid, photosCount, photosRepairMid, verdict, verdictLoading, fetchVerdict }) {
+  // Si un verdict est déjà présent (analyse rouverte depuis l'historique),
+  // on ne relance pas l'IA automatiquement — "Recalculer" reste disponible.
+  useEffect(() => { if (!verdict) fetchVerdict(); }, []);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsTab, setDetailsTab] = useState("specs");
   const [cgDetailOpen, setCgDetailOpen] = useState(false);
@@ -738,7 +893,11 @@ function ResultScreen({ vehicle, marketData, go, purchasePrice, setPurchasePrice
   }, [vehicle]);
   const resaleEstimate = resaleRange.mid;
 
-  const suggested = useMemo(() => suggestedMaxPurchase(resaleEstimate, repairCosts), [resaleEstimate, repairCosts]);
+  // Le prix max conseillé vient de l'IA (voir carte "Verdict IA", qui adapte
+  // la marge cible à la revente/au risque de ce modèle précis) ; la formule
+  // fixe à 12% ne sert que de repère tant que le verdict n'est pas chargé.
+  const ruleBasedSuggested = useMemo(() => suggestedMaxPurchase(resaleEstimate, repairCosts), [resaleEstimate, repairCosts]);
+  const suggested = verdict?.maxPurchasePrice ?? ruleBasedSuggested;
 
   const cgIsOld = new Date().getFullYear() - vehicle.year > 10;
   const cgIsElectric = vehicle.fuel === "Électrique";
@@ -761,223 +920,278 @@ function ResultScreen({ vehicle, marketData, go, purchasePrice, setPurchasePrice
 
   return (
     <div className="pb-44" style={{ background: "#0F1715", minHeight: "100vh" }}>
-      {/* A. HEADER */}
-      <div className="flex items-center justify-between px-5 pt-6 pb-3">
-        <button onClick={() => go("scan")} className="p-1 -ml-1"><ArrowLeft size={20} color="#EDF2EF" /></button>
-        <div className="text-center">
-          <div className="text-[15px] font-semibold" style={{ color: "#EDF2EF" }}>Analyse de Deal</div>
-          <div className="text-[10px]" style={{ color: "#6B776F" }}>AutoProfit</div>
+      {/* 1. HEADER COMPACT — véhicule + score/verdict intégrés, tout tient sur 2 lignes */}
+      <div className="px-5 pt-5 pb-4">
+        <div className="flex items-center justify-between mb-3">
+          <button onClick={() => go("scan")} className="p-1 -ml-1"><ArrowLeft size={20} color="#EDF2EF" /></button>
+          <button onClick={() => go("home")} className="p-1 -mr-1"><X size={20} color="#6B776F" /></button>
         </div>
-        <button onClick={() => go("home")} className="p-1 -mr-1"><X size={20} color="#6B776F" /></button>
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[18px] font-bold truncate" style={{ color: "#EDF2EF" }}>{vehicle.name}</div>
+            <div className="text-[12px]" style={{ color: "#8C9992" }}>{vehicle.year}</div>
+          </div>
+          <div className="flex items-center gap-1.5 rounded-full pl-2.5 pr-3 py-1.5 shrink-0" style={{ background: meta.bg, border: `1px solid ${meta.color}44` }}>
+            <meta.Icon size={13} color={meta.color} />
+            <span className="ap-display text-[13px] font-bold" style={{ color: meta.color }}>{incompleteInput ? "—" : `${final.score}/100`}</span>
+            <span className="text-[11px] font-bold" style={{ color: meta.color }}>· {meta.label}</span>
+          </div>
+        </div>
       </div>
 
       <div className="px-5 space-y-3">
-        {/* B. HERO CARD — score & marge */}
-        <Card className="p-5" style={{ background: `linear-gradient(160deg, ${meta.color}12, #0F1715 75%)`, border: `1px solid ${meta.color}3d` }}>
-          <div className="flex items-center justify-between mb-4">
-            <div className="min-w-0">
-              <div className="text-[13px] truncate mb-1" style={{ color: "#8C9992" }}>{vehicle.name} · {vehicle.year}</div>
-              <div className="flex items-center gap-1.5 rounded-full px-2.5 py-1 w-fit" style={{ background: meta.bg }}>
-                <meta.Icon size={13} color={meta.color} />
-                <span className="text-[11px] font-bold" style={{ color: meta.color }}>{meta.label}</span>
-              </div>
-            </div>
-            <ScoreGauge score={incompleteInput ? 0 : final.score} color={meta.color} size={64} />
+        {/* 2. COTE DU VÉHICULE (très gros) + MARGE NETTE (vert dynamique) */}
+        <Card className="p-5 text-center" style={{ background: `linear-gradient(160deg, ${meta.color}10, #0F1715 80%)`, border: `1px solid ${meta.color}33` }}>
+          <div className="text-[12px] mb-1" style={{ color: "#8C9992" }}>Cote de marché / revente estimée</div>
+          <div className="ap-display text-[42px] font-bold leading-none" style={{ color: "#EDF2EF" }}>{currency(vehicle.market)}</div>
+          <div className="text-[11px] mt-1.5" style={{ color: "#6B776F" }}>
+            {marketData.isDemo
+              ? "Estimation neutre — aucun comparable trouvé pour ce modèle."
+              : `${marketData.count} comparables réels · confiance ${marketData.confidence}`}
           </div>
 
-          <div className="text-[12px] mb-1" style={{ color: "#8C9992" }}>Marge nette estimée</div>
-          {incompleteInput ? (
-            <div className="ap-display text-[22px] font-bold leading-tight" style={{ color: "#6B776F" }}>
-              Renseigne un prix vendeur
+          <div className="mt-4 pt-4" style={{ borderTop: "1px solid #1E2822" }}>
+            <div className="text-[12px] mb-1" style={{ color: "#8C9992" }}>Marge nette estimée</div>
+            {incompleteInput ? (
+              <div className="ap-display text-[20px] font-bold" style={{ color: "#6B776F" }}>Renseigne un prix vendeur</div>
+            ) : (
+              <div className="ap-display text-[26px] font-bold leading-tight" style={{ color: final.margin >= 0 ? "#22C55E" : "#E5484D" }}>
+                {final.marginMin >= 0 ? "+" : ""}{currency(final.marginMin)} à {final.marginMax >= 0 ? "+" : ""}{currency(final.marginMax)}
+              </div>
+            )}
+            <div className="text-[12px] mt-0.5 font-semibold" style={{ color: "#8C9992" }}>
+              ROI {incompleteInput ? "—" : `${final.roi >= 0 ? "+" : ""}${final.roi.toFixed(0)} %`}
             </div>
-          ) : (
-            <div className="ap-display text-[27px] font-bold leading-tight" style={{ color: final.margin >= 0 ? "#22C55E" : "#E5484D" }}>
-              {final.marginMin >= 0 ? "+" : ""}{currency(final.marginMin)} à {final.marginMax >= 0 ? "+" : ""}{currency(final.marginMax)}
-            </div>
-          )}
-          <div className="text-[13px] mt-1 font-semibold" style={{ color: "#8C9992" }}>
-            ROI {incompleteInput ? "—" : `${final.roi >= 0 ? "+" : ""}${final.roi.toFixed(0)} %`}
           </div>
         </Card>
 
-        {/* C. ZONE DE SAISIE — prix vendeur */}
-        <Card className="p-5">
-          <label className="text-[12px] font-medium block mb-1.5" style={{ color: "#8C9992" }}>Prix demandé (vendeur)</label>
-          <div className="relative">
+        {/* 3. PRIX D'ACHAT VENDEUR — champ massif, central, avec le prix max IA juste sous */}
+        <Card className="p-5" style={{ border: `2px solid ${incompleteInput ? "#232E29" : underAsking ? "#22C55E55" : "#E8A33D55"}` }}>
+          <label className="text-[12px] font-semibold block mb-2" style={{ color: "#8C9992" }}>PRIX DEMANDÉ (VENDEUR)</label>
+          <div className="relative mb-3">
             <input type="text" inputMode="numeric" value={purchasePrice ? purchasePrice.toLocaleString("fr-FR") : ""}
               onFocus={(e) => e.target.select()}
               onChange={(e) => setPurchasePrice(Number(e.target.value.replace(/[^\d]/g, "")) || 0)}
               placeholder="0"
-              className="w-full rounded-xl pl-4 pr-11 py-3.5 text-[26px] ap-display font-bold outline-none"
+              className="w-full rounded-xl pl-4 pr-14 py-5 text-[36px] ap-display font-bold outline-none"
               style={{ background: "#0B0F0D", border: `1px solid ${incompleteInput ? "#E8A33D66" : "#232E29"}`, color: "#EDF2EF" }} />
-            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[22px] font-bold" style={{ color: "#6B776F" }}>€</span>
+            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[26px] font-bold" style={{ color: "#6B776F" }}>€</span>
           </div>
+
+          <div className="flex items-center justify-between rounded-xl px-3.5 py-3" style={{ background: "#0B0F0D" }}>
+            <span className="text-[12px] flex items-center gap-1.5" style={{ color: "#8C9992" }}>
+              <Sparkles size={12} color="#D4A94A" /> Prix max conseillé (IA)
+            </span>
+            {verdictLoading ? (
+              <Spinner size={14} color="#8C9992" />
+            ) : (
+              <span className="ap-display text-[18px] font-bold" style={{ color: underAsking ? "#22C55E" : "#E8A33D" }}>{currency(suggested)}</span>
+            )}
+          </div>
+
           {incompleteInput ? (
             <p className="text-[11px] mt-2" style={{ color: "#E8A33D" }}>Saisie incomplète — renseigne un prix réaliste (≥ 100 €) pour voir le calcul de marge.</p>
-          ) : (
-            <div className="flex items-center justify-between mt-3">
-              <span className="text-[12px]" style={{ color: "#8C9992" }}>Prix max conseillé</span>
-              <span className="ap-display text-[15px] font-bold" style={{ color: underAsking ? "#22C55E" : "#E8A33D" }}>{currency(suggested)}</span>
-            </div>
-          )}
+          ) : verdict ? (
+            <p className="text-[11px] mt-2 leading-snug" style={{ color: "#6B776F" }}>{verdict.explanation}</p>
+          ) : null}
         </Card>
 
-        {/* D. ÉTAT DU VÉHICULE — toggles avec impact affiché */}
-        <div className="grid grid-cols-2 gap-2.5">
-          <button onClick={() => go("damage")} className="rounded-xl py-3 px-2 text-center" style={{ background: "#141C18", border: `1px solid ${photosCount > 0 ? "#E5484D55" : "#232E29"}` }}>
-            <div className="text-[12px] font-semibold" style={{ color: "#EDF2EF" }}>📸 Dégâts esthétiques</div>
-            <div className="text-[12px] font-bold mt-0.5" style={{ color: photosCount > 0 ? "#E5484D" : "#6B776F" }}>
-              {photosCount > 0 ? `-${currency(photosRepairMid)}` : "Aucun signalé"}
-            </div>
+        {/* 4a. ÉTAT DU VÉHICULE — discret, juste l'impact chiffré */}
+        <div className="flex gap-2">
+          <button onClick={() => go("damage")} className="flex-1 rounded-lg py-2 px-2 text-center" style={{ background: "#141C18", border: `1px solid ${photosCount > 0 ? "#E5484D55" : "#1E2822"}` }}>
+            <span className="text-[11px]" style={{ color: "#8C9992" }}>📸 Dégâts</span>
+            <span className="text-[11px] font-bold ml-1.5" style={{ color: photosCount > 0 ? "#E5484D" : "#6B776F" }}>
+              {photosCount > 0 ? `-${currency(photosRepairMid)}` : "aucun"}
+            </span>
           </button>
-          <button onClick={() => go("problems")} className="rounded-xl py-3 px-2 text-center" style={{ background: "#141C18", border: `1px solid ${problemsCount > 0 ? "#E5484D55" : "#232E29"}` }}>
-            <div className="text-[12px] font-semibold" style={{ color: "#EDF2EF" }}>🔧 Problème mécanique</div>
-            <div className="text-[12px] font-bold mt-0.5" style={{ color: problemsCount > 0 ? "#E5484D" : "#6B776F" }}>
-              {problemsCount > 0 ? `-${currency(problemsRepairMid)}` : "Aucun signalé"}
-            </div>
+          <button onClick={() => go("problems")} className="flex-1 rounded-lg py-2 px-2 text-center" style={{ background: "#141C18", border: `1px solid ${problemsCount > 0 ? "#E5484D55" : "#1E2822"}` }}>
+            <span className="text-[11px]" style={{ color: "#8C9992" }}>🔧 Problème</span>
+            <span className="text-[11px] font-bold ml-1.5" style={{ color: problemsCount > 0 ? "#E5484D" : "#6B776F" }}>
+              {problemsCount > 0 ? `-${currency(problemsRepairMid)}` : "aucun"}
+            </span>
           </button>
         </div>
 
-        {/* E. BREAKDOWN DES COÛTS */}
-        <Card className="p-5">
-          <div className="text-[12px] font-semibold mb-3" style={{ color: "#8C9992" }}>DÉTAIL DU CALCUL</div>
-
-          <div className="flex items-center justify-between py-1.5">
-            <span className="text-[13px]" style={{ color: "#8C9992" }}>Prix de marché initial</span>
-            <span className="ap-display text-[13px]" style={{ color: "#EDF2EF" }}>{currency(vehicle.market)}</span>
-          </div>
-          {(repairCosts > 0 || riskDiscount > 0) && (
-            <div className="flex items-center justify-between py-1.5">
-              <span className="text-[13px]" style={{ color: "#8C9992" }}>Réparations + décote de risque</span>
-              <span className="ap-display text-[13px]" style={{ color: "#E5484D" }}>-{currency(repairCosts + riskDiscount)}</span>
-            </div>
-          )}
-
-          {/* Carte grise, avec toggle Pro/Particulier */}
-          <div className="flex items-center justify-between py-1.5">
-            <span className="text-[13px]" style={{ color: "#8C9992" }}>Frais de carte grise</span>
-            <span className="ap-display text-[13px]" style={{ color: "#EDF2EF" }}>{currency(carteGrise.total)}</span>
-          </div>
-          <div className="flex items-center justify-between pl-3 py-1.5">
-            <select value={cgRegion} onChange={(e) => setCgRegion(e.target.value)}
-              className="rounded-lg px-2 py-1.5 text-[11px] outline-none appearance-none"
-              style={{ background: "#0B0F0D", border: "1px solid #232E29", color: "#EDF2EF" }}>
-              {CARTE_GRISE_REGIONS.map((r) => (<option key={r} value={r}>{r}</option>))}
-            </select>
-            <button onClick={() => setCgDetailOpen(!cgDetailOpen)} className="text-[10px] underline" style={{ color: "#6B776F" }}>détail</button>
-          </div>
-          <div className="flex items-center justify-between pl-3 py-2">
-            <span className="text-[12px] font-medium" style={{ color: "#EDF2EF" }}>Statut professionnel (achat-revente)</span>
-            <button
-              onClick={() => setCgIsPro(!cgIsPro)}
-              className="relative shrink-0"
-              style={{ width: 42, height: 24, borderRadius: 999, background: cgIsPro ? "#22C55E" : "#2B372F", transition: "background 0.2s" }}
-            >
-              <div
-                className="absolute rounded-full"
-                style={{ width: 18, height: 18, top: 3, left: cgIsPro ? 21 : 3, background: "#0B0F0D", transition: "left 0.2s" }}
-              />
-            </button>
-          </div>
-          {cgDetailOpen && (
-            <div className="ml-3 mb-1 rounded-xl px-3 py-2.5" style={{ background: "#0B0F0D", border: "1px solid #232E29" }}>
-              <div className="flex items-center justify-between text-[11px] py-0.5">
-                <span style={{ color: "#8C9992" }}>Taxe régionale (Y1) — {vehicle.fiscalPower} CV{cgIsPro ? " · pro" : cgIsElectric ? " · exonérée" : cgIsOld ? " · −50%, >10 ans" : ""}</span>
-                <span className="ap-display" style={{ color: "#EDF2EF" }}>{currency2(carteGrise.y1)}</span>
-              </div>
-              <div className="flex items-center justify-between text-[11px] py-0.5">
-                <span style={{ color: "#8C9992" }}>Taxes ANTS{cgIsPro ? " — pro" : ""}</span>
-                <span className="ap-display" style={{ color: "#EDF2EF" }}>{currency2(carteGrise.antsFees)}</span>
-              </div>
-              <div className="flex items-center justify-between text-[11px] py-0.5">
-                <span style={{ color: "#8C9992" }}>Frais de dossier {cgIsPro ? "— pro (0 €)" : "(30 € en moyenne)"}</span>
-                <span className="ap-display" style={{ color: "#EDF2EF" }}>{currency2(carteGrise.serviceFee)}</span>
-              </div>
-            </div>
-          )}
-
-          <div className="flex items-center justify-between pt-3 mt-2" style={{ borderTop: "1px solid #1E2822" }}>
-            <div>
-              <div className="text-[11px]" style={{ color: "#8C9992" }}>Coût d'achat total</div>
-              <div className="ap-display text-[17px] font-bold" style={{ color: "#EDF2EF" }}>{incompleteInput ? "—" : currency(final.costTotal)}</div>
-            </div>
-            <ChevronRight size={16} color="#6B776F" />
-            <div className="text-right">
-              <div className="text-[11px]" style={{ color: "#8C9992" }}>Revente estimée</div>
-              <div className="ap-display text-[15px] font-bold" style={{ color: "#EDF2EF" }}>{currency(resaleRange.min)} - {currency(resaleRange.max)}</div>
-            </div>
-          </div>
-        </Card>
-
-        {/* Détails techniques — repliés par défaut pour ne pas surcharger l'écran */}
+        {/* 4b. DÉTAILS & ANALYSE COMPLÈTE — tout le secondaire, replié par défaut */}
         <Card className="p-0 overflow-hidden">
-          <button onClick={() => setDetailsOpen(!detailsOpen)} className="w-full flex items-center justify-between px-5 py-4">
-            <span className="flex items-center gap-2 text-[12px] font-semibold" style={{ color: "#8C9992" }}>
-              <FileText size={14} color="#8C9992" />
-              FICHE TECHNIQUE & COMPARABLES
+          <button onClick={() => setDetailsOpen(!detailsOpen)} className="w-full flex items-center justify-between px-4 py-3">
+            <span className="flex items-center gap-2 text-[11px] font-semibold" style={{ color: "#8C9992" }}>
+              <FileText size={13} color="#8C9992" />
+              DÉTAILS & ANALYSE COMPLÈTE
             </span>
-            <ChevronRight size={16} color="#6B776F" style={{ transform: detailsOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+            <ChevronRight size={15} color="#6B776F" style={{ transform: detailsOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
           </button>
           {detailsOpen && (
-            <>
-              <div className="flex" style={{ borderTop: "1px solid #1E2822", borderBottom: "1px solid #1E2822" }}>
-                <button onClick={() => setDetailsTab("specs")} className="flex-1 py-2.5 text-[12px] font-semibold"
-                  style={{ color: detailsTab === "specs" ? "#22C55E" : "#6B776F", borderBottom: detailsTab === "specs" ? "2px solid #22C55E" : "2px solid transparent" }}>
-                  Fiche technique
-                </button>
-                <button onClick={() => setDetailsTab("comparables")} className="flex-1 py-2.5 text-[12px] font-semibold"
-                  style={{ color: detailsTab === "comparables" ? "#22C55E" : "#6B776F", borderBottom: detailsTab === "comparables" ? "2px solid #22C55E" : "2px solid transparent" }}>
-                  Comparables
-                </button>
+            <div style={{ borderTop: "1px solid #1E2822" }}>
+              {/* Verdict IA complet */}
+              <div className="p-4" style={{ borderBottom: "1px solid #1E2822" }}>
+                <div className="text-[11px] font-semibold mb-2.5" style={{ color: "#8C9992" }}>VERDICT IA — DÉTAIL</div>
+                {verdictLoading ? (
+                  <p className="text-[12px] flex items-center gap-2" style={{ color: "#6B776F" }}><Spinner size={13} color="#8C9992" /> Analyse en cours...</p>
+                ) : !verdict ? (
+                  <div className="flex items-center justify-between">
+                    <p className="text-[12px]" style={{ color: "#6B776F" }}>Analyse indisponible pour le moment.</p>
+                    <button onClick={fetchVerdict} className="text-[11px] underline shrink-0" style={{ color: "#6B776F" }}>Recalculer</button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mb-3">
+                      <span className="text-[11px]" style={{ color: "#6B776F" }}>
+                        Revente : <span style={{ color: RESALE_META[verdict.resaleDesirability]?.color, fontWeight: 700 }}>{RESALE_META[verdict.resaleDesirability]?.label}</span>
+                      </span>
+                      <span className="text-[11px]" style={{ color: "#6B776F" }}>
+                        Risque : <span style={{ color: RISK_META[verdict.riskLevel]?.color, fontWeight: 700 }}>{RISK_META[verdict.riskLevel]?.label}</span>
+                      </span>
+                      <button onClick={fetchVerdict} className="text-[11px] underline shrink-0 ml-auto" style={{ color: "#6B776F" }}>Recalculer</button>
+                    </div>
+                    {verdict.strengths?.map((s, i) => (
+                      <div key={`s${i}`} className="flex items-start gap-1.5 py-0.5">
+                        <CheckCircle2 size={12} color="#3FBF7F" className="shrink-0 mt-0.5" />
+                        <span className="text-[12px]" style={{ color: "#8C9992" }}>{s}</span>
+                      </div>
+                    ))}
+                    {verdict.concerns?.map((c, i) => (
+                      <div key={`c${i}`} className="flex items-start gap-1.5 py-0.5">
+                        <AlertTriangle size={12} color="#E8A33D" className="shrink-0 mt-0.5" />
+                        <span className="text-[12px]" style={{ color: "#8C9992" }}>{c}</span>
+                      </div>
+                    ))}
+                  </>
+                )}
               </div>
-              {detailsTab === "specs" ? (
-                <div className="p-4">
-                  <div className="flex items-center gap-1.5 mb-3">
-                    <CheckCircle2 size={12} color="#22C55E" />
-                    <span className="text-[11px] font-medium" style={{ color: "#22C55E" }}>Identification confirmée (démonstration)</span>
+
+              {/* Détail du calcul */}
+              <div className="p-4" style={{ borderBottom: "1px solid #1E2822" }}>
+                <div className="text-[11px] font-semibold mb-2.5" style={{ color: "#8C9992" }}>DÉTAIL DU CALCUL</div>
+                <div className="flex items-center justify-between py-1">
+                  <span className="text-[13px]" style={{ color: "#8C9992" }}>Prix de marché initial</span>
+                  <span className="ap-display text-[13px]" style={{ color: "#EDF2EF" }}>{currency(vehicle.market)}</span>
+                </div>
+                {(repairCosts > 0 || riskDiscount > 0) && (
+                  <div className="flex items-center justify-between py-1">
+                    <span className="text-[13px]" style={{ color: "#8C9992" }}>Réparations + décote de risque</span>
+                    <span className="ap-display text-[13px]" style={{ color: "#E5484D" }}>-{currency(repairCosts + riskDiscount)}</span>
                   </div>
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
-                    {[
-                      ["Année", vehicle.year], ["Kilométrage", `${vehicle.km.toLocaleString("fr-FR")} km`],
-                      ["Boîte", vehicle.gearbox], ["Carburant", vehicle.fuel],
-                      ["Chevaux fiscaux", `${vehicle.fiscalPower} CV`], ["Puissance", `${vehicle.power} ch`],
-                      ["Places", vehicle.seats], ["Carrosserie", `${vehicle.body}, ${vehicle.doors}p`],
-                    ].map(([label, value]) => (
-                      <div key={label}>
-                        <div className="text-[10px]" style={{ color: "#6B776F" }}>{label}</div>
-                        <div className="text-[13px] font-medium" style={{ color: "#EDF2EF" }}>{value}</div>
-                      </div>
-                    ))}
+                )}
+                <div className="flex items-center justify-between py-1">
+                  <span className="text-[13px]" style={{ color: "#8C9992" }}>Frais de carte grise</span>
+                  <span className="ap-display text-[13px]" style={{ color: "#EDF2EF" }}>{currency(carteGrise.total)}</span>
+                </div>
+                <div className="flex items-center justify-between pl-3 py-1">
+                  <select value={cgRegion} onChange={(e) => setCgRegion(e.target.value)}
+                    className="rounded-lg px-2 py-1.5 text-[11px] outline-none appearance-none"
+                    style={{ background: "#0B0F0D", border: "1px solid #232E29", color: "#EDF2EF" }}>
+                    {CARTE_GRISE_REGIONS.map((r) => (<option key={r} value={r}>{r}</option>))}
+                  </select>
+                  <button onClick={() => setCgDetailOpen(!cgDetailOpen)} className="text-[10px] underline" style={{ color: "#6B776F" }}>détail</button>
+                </div>
+                <div className="flex items-center justify-between pl-3 py-2">
+                  <span className="text-[12px] font-medium" style={{ color: "#EDF2EF" }}>Statut professionnel (achat-revente)</span>
+                  <button
+                    onClick={() => setCgIsPro(!cgIsPro)}
+                    className="relative shrink-0"
+                    style={{ width: 42, height: 24, borderRadius: 999, background: cgIsPro ? "#22C55E" : "#2B372F", transition: "background 0.2s" }}
+                  >
+                    <div
+                      className="absolute rounded-full"
+                      style={{ width: 18, height: 18, top: 3, left: cgIsPro ? 21 : 3, background: "#0B0F0D", transition: "left 0.2s" }}
+                    />
+                  </button>
+                </div>
+                {cgDetailOpen && (
+                  <div className="ml-3 mb-1 rounded-xl px-3 py-2.5" style={{ background: "#0B0F0D", border: "1px solid #232E29" }}>
+                    <div className="flex items-center justify-between text-[11px] py-0.5">
+                      <span style={{ color: "#8C9992" }}>Taxe régionale (Y1) — {vehicle.fiscalPower} CV{cgIsPro ? " · pro" : cgIsElectric ? " · exonérée" : cgIsOld ? " · −50%, >10 ans" : ""}</span>
+                      <span className="ap-display" style={{ color: "#EDF2EF" }}>{currency2(carteGrise.y1)}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] py-0.5">
+                      <span style={{ color: "#8C9992" }}>Taxes ANTS{cgIsPro ? " — pro" : ""}</span>
+                      <span className="ap-display" style={{ color: "#EDF2EF" }}>{currency2(carteGrise.antsFees)}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] py-0.5">
+                      <span style={{ color: "#8C9992" }}>Frais de dossier {cgIsPro ? "— pro (0 €)" : "(30 € en moyenne)"}</span>
+                      <span className="ap-display" style={{ color: "#EDF2EF" }}>{currency2(carteGrise.serviceFee)}</span>
+                    </div>
+                  </div>
+                )}
+                <div className="flex items-center justify-between pt-3 mt-2" style={{ borderTop: "1px solid #1E2822" }}>
+                  <div>
+                    <div className="text-[11px]" style={{ color: "#8C9992" }}>Coût d'achat total</div>
+                    <div className="ap-display text-[17px] font-bold" style={{ color: "#EDF2EF" }}>{incompleteInput ? "—" : currency(final.costTotal)}</div>
+                  </div>
+                  <ChevronRight size={16} color="#6B776F" />
+                  <div className="text-right">
+                    <div className="text-[11px]" style={{ color: "#8C9992" }}>Revente estimée</div>
+                    <div className="ap-display text-[15px] font-bold" style={{ color: "#EDF2EF" }}>{currency(resaleRange.min)} - {currency(resaleRange.max)}</div>
                   </div>
                 </div>
-              ) : (
-                <div className="p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-[12px]" style={{ color: "#EDF2EF" }}>{marketData.count} comparables · médiane {currency(marketData.median)}</span>
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md" style={{ color: marketData.confidence === "élevée" ? "#22C55E" : marketData.confidence === "moyenne" ? "#E8A33D" : "#E5484D", background: "#0B0F0D" }}>
-                      {marketData.confidence}
-                    </span>
-                  </div>
-                  <div className="space-y-2">
-                    {marketData.comparables.map((c, i) => (
-                      <div key={i} className="flex items-center justify-between py-1.5" style={{ borderTop: i > 0 ? "1px solid #1E2822" : "none" }}>
-                        <div className="min-w-0">
-                          <div className="text-[12px] truncate" style={{ color: "#EDF2EF" }}>{c.label} — {c.year}</div>
-                          <div className="flex items-center gap-1 text-[10px]" style={{ color: "#6B776F" }}><MapPin size={10} /> {c.location} · {c.km.toLocaleString("fr-FR")} km</div>
+              </div>
+
+              {/* Fiche technique + comparables */}
+              <div>
+                <div className="flex" style={{ borderBottom: "1px solid #1E2822" }}>
+                  <button onClick={() => setDetailsTab("specs")} className="flex-1 py-2.5 text-[12px] font-semibold"
+                    style={{ color: detailsTab === "specs" ? "#22C55E" : "#6B776F", borderBottom: detailsTab === "specs" ? "2px solid #22C55E" : "2px solid transparent" }}>
+                    Fiche technique
+                  </button>
+                  <button onClick={() => setDetailsTab("comparables")} className="flex-1 py-2.5 text-[12px] font-semibold"
+                    style={{ color: detailsTab === "comparables" ? "#22C55E" : "#6B776F", borderBottom: detailsTab === "comparables" ? "2px solid #22C55E" : "2px solid transparent" }}>
+                    Comparables
+                  </button>
+                </div>
+                {detailsTab === "specs" ? (
+                  <div className="p-4">
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
+                      {[
+                        ["Année", vehicle.year], ["Kilométrage", `${vehicle.km.toLocaleString("fr-FR")} km`],
+                        ["Boîte", vehicle.gearbox], ["Carburant", vehicle.fuel],
+                        ["Chevaux fiscaux", `${vehicle.fiscalPower} CV`], ["Puissance", `${vehicle.power} ch`],
+                        ...(vehicle.motorisation ? [["Motorisation", vehicle.motorisation]] : []),
+                      ].map(([label, value]) => (
+                        <div key={label}>
+                          <div className="text-[10px]" style={{ color: "#6B776F" }}>{label}</div>
+                          <div className="text-[13px] font-medium" style={{ color: "#EDF2EF" }}>{value}</div>
                         </div>
-                        <span className="ap-display text-[12px] font-semibold shrink-0" style={{ color: "#EDF2EF" }}>{currency(c.price)}</span>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
-                  <p className="text-[10px] mt-2" style={{ color: "#6B776F" }}>Exemples simulés en mode démonstration.</p>
-                </div>
-              )}
-            </>
+                ) : (
+                  <div className="p-4">
+                    {marketData.count === 0 ? (
+                      <p className="text-[12px]" style={{ color: "#8C9992" }}>Aucun comparable trouvé pour ce modèle précis — vérifie la cote manuellement avant d'acheter.</p>
+                    ) : (
+                      <>
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[12px]" style={{ color: "#EDF2EF" }}>{marketData.count} comparables · médiane {currency(marketData.median)}</span>
+                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md" style={{ color: marketData.confidence === "élevée" ? "#22C55E" : marketData.confidence === "moyenne" ? "#E8A33D" : "#E5484D", background: "#0B0F0D" }}>
+                            {marketData.confidence}
+                          </span>
+                        </div>
+                        <div className="space-y-2">
+                          {marketData.comparables.map((c, i) => (
+                            <div key={i} className="flex items-center justify-between py-1.5" style={{ borderTop: i > 0 ? "1px solid #1E2822" : "none" }}>
+                              <div className="min-w-0">
+                                <div className="text-[12px] truncate" style={{ color: "#EDF2EF" }}>{c.label} — {c.year}</div>
+                                <div className="flex items-center gap-1 text-[10px]" style={{ color: "#6B776F" }}>
+                                  {c.location && (<><MapPin size={10} /> Dép. {c.location} · </>)}{c.km.toLocaleString("fr-FR")} km
+                                </div>
+                              </div>
+                              <span className="ap-display text-[12px] font-semibold shrink-0" style={{ color: "#EDF2EF" }}>{currency(c.price)}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <p className="text-[10px] mt-2" style={{ color: "#6B776F" }}>Annonces réelles (La Centrale) au moment de l'analyse.</p>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
           )}
         </Card>
       </div>
 
-      {/* F. CTA — sticky */}
+      {/* CTA — sticky */}
       <div className="fixed left-0 right-0 px-5 py-3" style={{ bottom: 64, background: "rgba(15,23,21,0.95)", backdropFilter: "blur(10px)", borderTop: "1px solid #1E2822" }}>
         <div className="max-w-md mx-auto">
           <PrimaryButton onClick={() => { onSave(final); go("history"); }} disabled={incompleteInput} style={{ fontWeight: 900, color: "#04140C" }}>
@@ -1213,7 +1427,7 @@ function DamageScreen({ go, photos, setPhotos, vehicle, authToken }) {
   );
 }
 
-function HistoryScreen({ go, authToken }) {
+function HistoryScreen({ go, authToken, openSavedAnalysis }) {
   const [history, setHistory] = useState(null); // null = chargement en cours
   const [error, setError] = useState("");
 
@@ -1254,11 +1468,13 @@ function HistoryScreen({ go, authToken }) {
           const meta = VERDICT_META[h.verdict] || VERDICT_META.negotiate;
           const purchasePrice = Number(h.purchase_price);
           const margin = Number(h.margin);
+          const reopenable = !!h.snapshot;
           return (
-            <Card key={h.id} className="p-4">
+            <Card key={h.id} className="p-4" onClick={reopenable ? () => openSavedAnalysis(h) : undefined}
+              style={reopenable ? { cursor: "pointer" } : {}}>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[14px] font-semibold" style={{ color: "#EDF2EF" }}>{h.vehicle_name}</span>
-                {h.plate && <span className="text-[11px]" style={{ color: "#6B776F" }}>{h.plate}</span>}
+                {reopenable && <ChevronRight size={16} color="#6B776F" />}
               </div>
               <div className="flex items-center justify-between text-[13px] mb-1" style={{ color: "#8C9992" }}>
                 <span>Achat : {currency(purchasePrice)}</span>
@@ -1280,7 +1496,7 @@ function HistoryScreen({ go, authToken }) {
 }
 
 function PremiumScreen({ go, isPremium, setIsPremium }) {
-  const perks = ["Analyses de véhicules", "Identification automatique par plaque", "Prix du marché", "Prix d'achat maximum conseillé", "Problèmes mécaniques & décote de risque", "Analyse des dégâts par photo", "Historique des analyses", "Analyses illimitées"];
+  const perks = ["Analyses de véhicules", "Décodage VIN automatique", "Cote réelle du marché (La Centrale)", "Verdict IA achat-revente", "Prix d'achat maximum conseillé", "Problèmes mécaniques & décote de risque", "Analyse des dégâts par photo", "Historique des analyses", "Analyses illimitées"];
   return (
     <div className="pb-24">
       <Header title="AutoProfit Premium" onBack={() => go("home")} />
@@ -1815,6 +2031,8 @@ export default function AutoProfit() {
   const [vehicle, setVehicle] = useState(null);
   const [marketData, setMarketData] = useState(null);
   const [purchasePrice, setPurchasePrice] = useState(0);
+  const [verdict, setVerdict] = useState(null);
+  const [verdictLoading, setVerdictLoading] = useState(false);
   const [cgRegion, setCgRegion] = useState(CARTE_GRISE_REGIONS[0]);
   const [cgIsPro, setCgIsPro] = useState(false);
   const [problems, setProblems] = useState({});
@@ -1903,19 +2121,43 @@ export default function AutoProfit() {
 
   const go = (s) => setScreen(s);
 
-  const handleAnalyze = async (input, userKm) => {
+  // vehicleInput vient du formulaire manuel de ScanScreen (éventuellement
+  // pré-rempli via décodage VIN) — plus d'identification à faire ici, juste
+  // la recherche de comparables réels pour estimer la cote.
+  const handleAnalyze = async (vehicleInput) => {
     if (!authUser) { setScreen("profile"); return; }
     if (limitReached) { setScreen("premium"); return; }
-    const v = await identifyVehicle(input, userKm);
-    const md = await getMarketData(v);
+    const md = await fetchMarketData(vehicleInput, authToken);
+    const v = { ...vehicleInput, name: `${vehicleInput.brand} ${vehicleInput.model}`.trim(), market: md.mean, referenceMarket: md.mean };
     setVehicle(v);
     setMarketData(md);
     setProblems({});
     setAiEstimates({});
     setPhotos([]);
+    setVerdict(null);
     const resale = Math.round(v.market * 0.945);
     setPurchasePrice(suggestedMaxPurchase(resale, 0));
     setScreen("result");
+  };
+
+  // Verdict IA (qualité du deal / revente / risques) — calculé à la demande
+  // (une fois à l'arrivée sur le résultat, ou via le bouton "Recalculer"
+  // après ajustement du prix) plutôt qu'à chaque frappe, pour limiter le coût.
+  const fetchVerdict = async () => {
+    if (!vehicle || !purchasePrice || !authToken) return;
+    setVerdictLoading(true);
+    try {
+      const v = await apiFetch("/api/vehicle/verdict", {
+        method: "POST",
+        token: authToken,
+        body: { vehicle, askingPrice: purchasePrice, marketPrice: vehicle.market, repairCosts, riskDiscount, comparables: marketData?.comparables },
+      });
+      setVerdict(v);
+    } catch (e) {
+      setVerdict(null);
+    } finally {
+      setVerdictLoading(false);
+    }
   };
 
   // Enregistre réellement l'analyse dans la base de données (visible ensuite
@@ -1923,17 +2165,21 @@ export default function AutoProfit() {
   const handleSave = async (final) => {
     setHistory([{ name: vehicle.name, date: new Date().toLocaleDateString("fr-FR"), purchasePrice, margin: final.margin, score: final.score, verdict: final.verdict }, ...history]);
     if (!authToken) return;
+    // Snapshot complet : permet de rouvrir cette analyse plus tard exactement
+    // telle qu'elle était (cote, comparables, verdict IA, dégâts/problèmes
+    // signalés), sans avoir à tout refaire.
+    const snapshot = { vehicle, marketData, purchasePrice, problems, aiEstimates, photos, verdict, cgRegion, cgIsPro };
     try {
       await apiFetch("/api/vehicle/analyses", {
         method: "POST",
         token: authToken,
         body: {
           vehicleName: vehicle.name,
-          plate: vehicle.plate,
           purchasePrice,
           margin: final.margin,
           score: final.score,
           verdict: final.verdict,
+          snapshot,
         },
       });
       setAnalysisLog((prev) => [...prev, Date.now()]);
@@ -1941,6 +2187,23 @@ export default function AutoProfit() {
       // si le quota serveur est dépassé entre-temps, l'analyse reste visible localement
       // mais n'est pas comptabilisée côté serveur
     }
+  };
+
+  // Rouvre une analyse passée depuis l'historique, avec tout son contexte
+  // (véhicule, cote, verdict IA, dégâts/problèmes) — pas juste les 3 chiffres.
+  const openSavedAnalysis = (row) => {
+    if (!row.snapshot) return;
+    const s = row.snapshot;
+    setVehicle(s.vehicle);
+    setMarketData(s.marketData);
+    setPurchasePrice(s.purchasePrice);
+    setProblems(s.problems || {});
+    setAiEstimates(s.aiEstimates || {});
+    setPhotos(s.photos || []);
+    setVerdict(s.verdict || null);
+    setCgRegion(s.cgRegion || CARTE_GRISE_REGIONS[0]);
+    setCgIsPro(!!s.cgIsPro);
+    setScreen("result");
   };
 
   return (
@@ -1956,6 +2219,7 @@ export default function AutoProfit() {
           limitReached={limitReached}
           authUser={authUser}
           authLoading={authLoading}
+          authToken={authToken}
         />
       )}
       {screen === "result" && vehicle && (
@@ -1963,13 +2227,14 @@ export default function AutoProfit() {
           repairCosts={repairCosts} repairCostsMin={repairCostsMin} repairCostsMax={repairCostsMax} riskDiscount={riskDiscount} onSave={handleSave}
           cgRegion={cgRegion} setCgRegion={setCgRegion} cgIsPro={cgIsPro} setCgIsPro={setCgIsPro}
           problemsCount={Object.keys(problems).length} problemsRepairMid={repairRange.problemsMid}
-          photosCount={photos.length} photosRepairMid={repairRange.photosMid} />
+          photosCount={photos.length} photosRepairMid={repairRange.photosMid}
+          verdict={verdict} verdictLoading={verdictLoading} fetchVerdict={fetchVerdict} />
       )}
       {screen === "problems" && (
         <ProblemsScreen go={go} selected={problems} setSelected={setProblems} vehicle={vehicle} aiEstimates={aiEstimates} setAiEstimate={setAiEstimate} authToken={authToken} />
       )}
       {screen === "damage" && <DamageScreen go={go} photos={photos} setPhotos={setPhotos} vehicle={vehicle} authToken={authToken} />}
-      {screen === "history" && <HistoryScreen go={go} authToken={authToken} />}
+      {screen === "history" && <HistoryScreen go={go} authToken={authToken} openSavedAnalysis={openSavedAnalysis} />}
       {screen === "premium" && <PremiumScreen go={go} isPremium={isPremium} setIsPremium={setIsPremium} />}
       {screen === "payment" && <PaymentScreen go={go} setIsPremium={setIsPremium} />}
       {screen === "profile" && (
