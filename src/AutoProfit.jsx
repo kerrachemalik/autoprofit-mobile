@@ -3,7 +3,7 @@ import {
   Car, Camera, CameraOff, ScanLine, TrendingUp, History as HistoryIcon, User, Home as HomeIcon,
   ChevronRight, CheckCircle2, AlertTriangle, XCircle, ArrowLeft, LogOut,
   CreditCard, Lock, Mail, Sparkles, Gauge, Trash2, Info, MapPin, Zap, Cog,
-  DoorClosed, Users, Wrench, X, ShieldCheck, HelpCircle
+  DoorClosed, Users, Wrench, X, ShieldCheck, HelpCircle, FileText
 } from "lucide-react";
 
 // ---------- Fonts ----------
@@ -12,6 +12,8 @@ const FontImport = () => (
     @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
     .ap-root { font-family: 'Inter', sans-serif; }
     .ap-display { font-family: 'Space Grotesk', sans-serif; font-variant-numeric: tabular-nums; }
+    @keyframes ap-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    @keyframes ap-pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
   `}</style>
 );
 
@@ -83,7 +85,9 @@ function computeCarteGrise(cv, region, isOld, isExempt, isPro) {
   let y1 = isExempt ? 0 : cv * (CARTE_GRISE_PRICES[region] ?? 0);
   if (!isExempt && isOld) y1 = y1 / 2;
   const antsFees = CG_Y4 + CG_Y5;
-  const total = y1 + antsFees + CG_SERVICE_FEE;
+  // Arrondi strict du total pour que "Prix + Carte grise" affiché corresponde
+  // exactement à "Coût d'achat total" affiché ailleurs, sans écart d'un euro.
+  const total = Math.round(y1 + antsFees + CG_SERVICE_FEE);
   return { y1, y4: CG_Y4, y5: CG_Y5, antsFees, serviceFee: CG_SERVICE_FEE, total };
 }
 
@@ -235,7 +239,16 @@ function currency(n) {
 async function getAiEstimateFromDescription(description, vehicle) {
   const prompt = `Tu es un expert automobile en France. Un acheteur envisage ce véhicule : ${vehicle.name}, ${vehicle.year}, ${vehicle.km} km, moteur ${vehicle.fuel} ${vehicle.power}ch (${vehicle.fiscalPower} CV fiscaux), boîte ${vehicle.gearbox}.
 L'utilisateur décrit ce problème avec ses propres mots : "${description}".
-Étudie cette description et détermine toi-même la gravité la plus probable, une fourchette de coût de réparation réaliste en France, et une décote de risque.
+Étudie cette description et détermine toi-même la gravité la plus probable, une fourchette de coût de réparation RÉALISTE en France (ne surestime jamais), et une décote de risque.
+
+Repères de calibration à respecter strictement :
+- Un pneu simplement dégonflé (pas crevé, pas usé) : gonflage gratuit ou quelques euros, gravité "léger", coût proche de 0 €.
+- Un pneu crevé réparable (bouchon/mèche) : 15-30 €.
+- Un pneu à changer (usé, hernie) : 80-150 € pièce.
+- Un voyant allumé sans autre précision, une petite rayure, une ampoule grillée, un balai d'essuie-glace : quelques dizaines d'euros maximum, gravité "léger".
+- Ne choisis "important" ou "critique" que si la description implique clairement une panne mécanique/moteur/boîte sérieuse.
+- N'invente jamais un problème plus grave que ce que l'utilisateur décrit réellement.
+
 Réponds UNIQUEMENT avec un objet JSON, sans texte autour, sans balises markdown, au format exact :
 {"severity": "<léger|modéré|important|critique>", "minCost": <euros, entier>, "maxCost": <euros, entier>, "riskPct": <décote de risque en fraction de la valeur du véhicule, ex 0.02 pour 2%, entre 0 et 0.1>, "explanation": "<1 phrase en français expliquant l'estimation et la gravité retenue, max 30 mots>"}`;
 
@@ -385,10 +398,10 @@ const Card = ({ children, className = "", style = {} }) => (
   <div className={`rounded-2xl ${className}`} style={{ background: "#141C18", border: "1px solid #232E29", ...style }}>{children}</div>
 );
 
-const PrimaryButton = ({ children, onClick, className = "", disabled }) => (
+const PrimaryButton = ({ children, onClick, className = "", disabled, style = {} }) => (
   <button onClick={onClick} disabled={disabled}
     className={`w-full rounded-xl py-3.5 font-semibold text-[15px] transition-all active:scale-[0.98] disabled:opacity-40 ${className}`}
-    style={{ background: "linear-gradient(135deg, #3FBF7F, #2E9963)", color: "#08120D" }}>
+    style={{ background: "linear-gradient(135deg, #3FBF7F, #2E9963)", color: "#08120D", ...style }}>
     {children}
   </button>
 );
@@ -415,6 +428,22 @@ function ScoreGauge({ score, color, size = 108 }) {
       <text x="50%" y="47%" textAnchor="middle" className="ap-display" fill="#EDF2EF" fontSize="26" fontWeight="700">{score}</text>
       <text x="50%" y="64%" textAnchor="middle" fill="#8C9992" fontSize="11">/ 100</text>
     </svg>
+  );
+}
+
+function Spinner({ size = 16, color = "#08120D" }) {
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        width: size,
+        height: size,
+        border: `2px solid ${color}33`,
+        borderTopColor: color,
+        borderRadius: "50%",
+        animation: "ap-spin 0.7s linear infinite",
+      }}
+    />
   );
 }
 
@@ -495,7 +524,7 @@ function HomeScreen({ go, isPremium, weeklyUsed }) {
         </div>
 
         <h1 className="ap-display text-[32px] leading-[1.15] font-semibold mb-4" style={{ color: "#EDF2EF" }}>
-          Sache combien acheter <span style={{ color: "#3FBF7F" }}>une voiture</span> pour vraiment gagner de l'argent.
+          Ton prochain achat, <span style={{ color: "#3FBF7F" }}>calculé</span> avant d'être signé.
         </h1>
         <p className="text-[15px] leading-relaxed mb-8" style={{ color: "#8C9992" }}>
           Scanne ou saisis une plaque. AutoProfit identifie le véhicule, trouve sa valeur de marché et calcule ta marge — automatiquement.
@@ -508,7 +537,7 @@ function HomeScreen({ go, isPremium, weeklyUsed }) {
 
       <div className="px-6 pt-8 space-y-4">
         {[
-          { n: "01", t: "Identifier", d: "Une plaque suffit", Icon: ScanLine },
+          { n: "01", t: "Identifier", d: "Plaque ou numéro VIN", Icon: ScanLine },
           { n: "02", t: "Analyser", d: "Fiche technique + valeur de marché automatiques", Icon: Gauge },
           { n: "03", t: "Décider", d: "Prix d'achat maximum + marge potentielle", Icon: TrendingUp },
         ].map((s) => (
@@ -575,34 +604,24 @@ function ScanScreen({ go, onAnalyze, isPremium, weeklyUsed, limitReached, authUs
 
   const runAnalyze = async (input) => {
     setLoading(true);
-    await onAnalyze(input, Number(km) || 0);
+    // Petit délai minimum pour que l'animation de chargement soit visible,
+    // et pour refléter le temps réel que prendront les vraies API une fois branchées.
+    await Promise.all([
+      onAnalyze(input, Number(km) || 0),
+      new Promise((resolve) => setTimeout(resolve, 900)),
+    ]);
     setLoading(false);
   };
 
-  if (authLoading) {
+  useEffect(() => {
+    if (!authLoading && !authUser) go("profile");
+  }, [authLoading, authUser]);
+
+  if (authLoading || !authUser) {
     return (
       <div className="pb-24">
         <Header title="Analyse ton véhicule" onBack={() => go("home")} />
         <div className="px-5"><Card className="p-8 text-center"><p className="text-[13px]" style={{ color: "#8C9992" }}>Chargement...</p></Card></div>
-      </div>
-    );
-  }
-
-  if (!authUser) {
-    return (
-      <div className="pb-24">
-        <Header title="Analyse ton véhicule" onBack={() => go("home")} />
-        <div className="px-5 space-y-4">
-          <Card className="p-6 text-center">
-            <User size={24} color="#3FBF7F" className="mx-auto mb-3" />
-            <p className="text-[15px] font-semibold mb-1" style={{ color: "#EDF2EF" }}>Un compte gratuit est nécessaire</p>
-            <p className="text-[13px] mb-5" style={{ color: "#8C9992" }}>
-              Crée un compte gratuit pour profiter de tes <span style={{ color: "#EDF2EF", fontWeight: 600 }}>3 analyses par semaine</span>.
-              Passe <span style={{ color: "#D4A94A", fontWeight: 600 }}>Premium</span> pour des analyses illimitées.
-            </p>
-            <PrimaryButton onClick={() => go("profile")}>Créer mon compte gratuit</PrimaryButton>
-          </Card>
-        </div>
       </div>
     );
   }
@@ -686,8 +705,13 @@ function ScanScreen({ go, onAnalyze, isPremium, weeklyUsed, limitReached, authUs
               </p>
             )}
             <PrimaryButton onClick={() => runAnalyze(`${tab.toUpperCase()}-CAM-${Date.now()}`)} disabled={loading || !(Number(km) > 0)}>
-              {loading ? "Analyse en cours..." : cameraError ? "Simuler un scan" : "Capturer et analyser"}
+              {loading ? <span className="flex items-center justify-center gap-2"><Spinner /> Analyse en cours...</span> : cameraError ? "Simuler un scan" : "Capturer et analyser"}
             </PrimaryButton>
+            {loading && (
+              <p className="text-[11px] text-center" style={{ color: "#6B776F", animation: "ap-pulse 1.4s ease-in-out infinite" }}>
+                Identification du véhicule et recherche du prix du marché...
+              </p>
+            )}
             {!(Number(km) > 0) && (
               <p className="text-[11px] text-center" style={{ color: "#E8A33D" }}>Renseigne le kilométrage ci-dessous avant de continuer.</p>
             )}
@@ -705,15 +729,21 @@ function ScanScreen({ go, onAnalyze, isPremium, weeklyUsed, limitReached, authUs
         </div>
 
         <PrimaryButton onClick={() => runAnalyze(value)} disabled={!value.trim() || !(Number(km) > 0) || loading}>
-          {loading ? "Analyse en cours..." : !(Number(km) > 0) ? "Renseigne le kilométrage" : "Analyser le véhicule"}
+          {loading ? <span className="flex items-center justify-center gap-2"><Spinner /> Analyse en cours...</span> : !(Number(km) > 0) ? "Renseigne le kilométrage" : "Analyser le véhicule"}
         </PrimaryButton>
+        {loading && (
+          <p className="text-[11px] text-center" style={{ color: "#6B776F", animation: "ap-pulse 1.4s ease-in-out infinite" }}>
+            Identification du véhicule et recherche du prix du marché...
+          </p>
+        )}
       </div>
     </div>
   );
 }
 
-function ResultScreen({ vehicle, marketData, go, purchasePrice, setPurchasePrice, repairCosts, repairCostsMin, repairCostsMax, riskDiscount, onSave, cgRegion, setCgRegion, cgIsPro, setCgIsPro }) {
-  const [activeTab, setActiveTab] = useState("specs");
+function ResultScreen({ vehicle, marketData, go, purchasePrice, setPurchasePrice, repairCosts, repairCostsMin, repairCostsMax, riskDiscount, onSave, cgRegion, setCgRegion, cgIsPro, setCgIsPro, problemsCount, problemsRepairMid, photosCount, photosRepairMid }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsTab, setDetailsTab] = useState("specs");
   const [cgDetailOpen, setCgDetailOpen] = useState(false);
 
   const valuation = useMemo(() => computeValuation(vehicle, repairCosts, riskDiscount), [vehicle, repairCosts, riskDiscount]);
@@ -728,221 +758,249 @@ function ResultScreen({ vehicle, marketData, go, purchasePrice, setPurchasePrice
 
   const suggested = useMemo(() => suggestedMaxPurchase(resaleEstimate, repairCosts), [resaleEstimate, repairCosts]);
 
-  // CV, âge et énergie proviennent automatiquement de la fiche véhicule identifiée par la plaque —
-  // seules la région et le statut professionnel restent à préciser.
   const cgIsOld = new Date().getFullYear() - vehicle.year > 10;
   const cgIsElectric = vehicle.fuel === "Électrique";
   const carteGrise = useMemo(
     () => computeCarteGrise(vehicle.fiscalPower, cgRegion, cgIsOld, cgIsElectric, cgIsPro),
     [vehicle, cgRegion, cgIsOld, cgIsElectric, cgIsPro]
   );
+
+  // Garde-fou anti-calcul absurde : sous 100 €, un ROI n'a plus aucun sens (peut afficher +1500 %).
+  // On neutralise le calcul plutôt que d'afficher un chiffre trompeur.
+  const incompleteInput = !purchasePrice || purchasePrice < 100;
+
   const final = useMemo(
     () => computeFinal(purchasePrice, repairCosts, repairCostsMin, repairCostsMax, resaleEstimate, resaleRange.min, resaleRange.max, carteGrise.total),
     [purchasePrice, repairCosts, repairCostsMin, repairCostsMax, resaleEstimate, resaleRange, carteGrise]
   );
   if (!marketData) return null;
-  const meta = VERDICT_META[final.verdict];
-  const underAsking = purchasePrice <= suggested;
+  const meta = incompleteInput ? { label: "SAISIE INCOMPLÈTE", color: "#6B776F", bg: "rgba(107,119,111,0.12)", Icon: AlertTriangle } : VERDICT_META[final.verdict];
+  const underAsking = purchasePrice > 0 && purchasePrice <= suggested;
 
   return (
-    <div className="pb-44">
-      {/* HEADER + MINI ALERT */}
-      <div className="flex items-center gap-3 px-5 pt-6 pb-3">
+    <div className="pb-44" style={{ background: "#0F1715", minHeight: "100vh" }}>
+      {/* A. HEADER */}
+      <div className="flex items-center justify-between px-5 pt-6 pb-3">
         <button onClick={() => go("scan")} className="p-1 -ml-1"><ArrowLeft size={20} color="#EDF2EF" /></button>
-        <div className="flex-1 min-w-0">
-          <div className="ap-display text-[17px] font-semibold truncate" style={{ color: "#EDF2EF" }}>{vehicle.name}</div>
-          <div className="text-[12px]" style={{ color: "#8C9992" }}>{vehicle.year} · {vehicle.plate}</div>
+        <div className="text-center">
+          <div className="text-[15px] font-semibold" style={{ color: "#EDF2EF" }}>Analyse de Deal</div>
+          <div className="text-[10px]" style={{ color: "#6B776F" }}>AutoProfit</div>
         </div>
-        <div className="flex items-center gap-1 rounded-full px-2 py-1 shrink-0" style={{ background: "rgba(212,169,74,0.12)" }}>
-          <Info size={10} color="#D4A94A" />
-          <span className="text-[10px] font-semibold" style={{ color: "#D4A94A" }}>Démo</span>
-        </div>
+        <button onClick={() => go("home")} className="p-1 -mr-1"><X size={20} color="#6B776F" /></button>
       </div>
 
       <div className="px-5 space-y-3">
-        {/* BLOC 1 — HERO VERDICT */}
-        <Card className="p-5" style={{ background: `linear-gradient(160deg, ${meta.color}14, #0B0F0D 70%)`, border: `1px solid ${meta.color}44` }}>
-          <div className="flex items-center gap-4">
-            <ScoreGauge score={final.score} color={meta.color} size={88} />
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1.5 rounded-full px-2.5 py-1 w-fit mb-2" style={{ background: meta.bg }}>
+        {/* B. HERO CARD — score & marge */}
+        <Card className="p-5" style={{ background: `linear-gradient(160deg, ${meta.color}12, #0F1715 75%)`, border: `1px solid ${meta.color}3d` }}>
+          <div className="flex items-center justify-between mb-4">
+            <div className="min-w-0">
+              <div className="text-[13px] truncate mb-1" style={{ color: "#8C9992" }}>{vehicle.name} · {vehicle.year}</div>
+              <div className="flex items-center gap-1.5 rounded-full px-2.5 py-1 w-fit" style={{ background: meta.bg }}>
                 <meta.Icon size={13} color={meta.color} />
                 <span className="text-[11px] font-bold" style={{ color: meta.color }}>{meta.label}</span>
               </div>
-              <div className="text-[11px]" style={{ color: "#8C9992" }}>Marge potentielle</div>
-              <div className="ap-display text-[21px] font-bold leading-tight" style={{ color: final.margin >= 0 ? "#3FBF7F" : "#E5484D" }}>
-                {final.marginMin >= 0 ? "+" : ""}{currency(final.marginMin)} à {final.marginMax >= 0 ? "+" : ""}{currency(final.marginMax)}
-              </div>
-              <div className="text-[12px] mt-0.5 font-medium" style={{ color: "#8C9992" }}>ROI {final.roi.toFixed(1)} %</div>
             </div>
+            <ScoreGauge score={incompleteInput ? 0 : final.score} color={meta.color} size={64} />
           </div>
 
-          <div className="grid grid-cols-3 gap-2 mt-4 pt-4" style={{ borderTop: "1px solid #1E2822" }}>
-            <div>
-              <div className="text-[10px]" style={{ color: "#8C9992" }}>Prix du marché</div>
-              <div className="ap-display text-[15px] font-bold" style={{ color: "#D4A94A" }}>{currency(vehicle.market)}</div>
+          <div className="text-[12px] mb-1" style={{ color: "#8C9992" }}>Marge nette estimée</div>
+          {incompleteInput ? (
+            <div className="ap-display text-[22px] font-bold leading-tight" style={{ color: "#6B776F" }}>
+              Renseigne un prix vendeur
             </div>
-            <div>
-              <div className="text-[10px]" style={{ color: "#8C9992" }}>Prix max conseillé</div>
-              <div className="ap-display text-[15px] font-semibold" style={{ color: underAsking ? "#3FBF7F" : "#E8A33D" }}>{currency(suggested)}</div>
+          ) : (
+            <div className="ap-display text-[27px] font-bold leading-tight" style={{ color: final.margin >= 0 ? "#22C55E" : "#E5484D" }}>
+              {final.marginMin >= 0 ? "+" : ""}{currency(final.marginMin)} à {final.marginMax >= 0 ? "+" : ""}{currency(final.marginMax)}
             </div>
-            <div>
-              <div className="text-[10px]" style={{ color: "#8C9992" }}>Prix vendeur</div>
-              <div className="ap-display text-[15px] font-semibold" style={{ color: "#EDF2EF" }}>{currency(purchasePrice)}</div>
-            </div>
+          )}
+          <div className="text-[13px] mt-1 font-semibold" style={{ color: "#8C9992" }}>
+            ROI {incompleteInput ? "—" : `${final.roi >= 0 ? "+" : ""}${final.roi.toFixed(0)} %`}
           </div>
         </Card>
 
-        {/* BLOC 2 — CALCULATEUR & SIMULATION */}
+        {/* C. ZONE DE SAISIE — prix vendeur */}
         <Card className="p-5">
-          <label className="text-[12px] font-medium block mb-1.5" style={{ color: "#8C9992" }}>Prix demandé par le vendeur</label>
-          <input type="number" value={purchasePrice}
-            onFocus={(e) => e.target.select()}
-            onChange={(e) => setPurchasePrice(Number(e.target.value.replace(/^0+(?=\d)/, "")) || 0)}
-            className="w-full rounded-xl px-4 py-3 text-[19px] ap-display font-semibold outline-none mb-3"
-            style={{ background: "#0B0F0D", border: "1px solid #232E29", color: "#EDF2EF" }} />
-
-          <div className="grid grid-cols-2 gap-2.5 mb-4">
-            <button onClick={() => go("damage")} className="rounded-xl py-2.5 text-[12px] font-semibold" style={{ background: "#1B2420", color: "#EDF2EF", border: "1px solid #2B372F" }}>📸 Dégâts esthétiques</button>
-            <button onClick={() => go("problems")} className="rounded-xl py-2.5 text-[12px] font-semibold" style={{ background: "#1B2420", color: "#EDF2EF", border: "1px solid #2B372F" }}>🔧 Problème mécanique</button>
+          <label className="text-[12px] font-medium block mb-1.5" style={{ color: "#8C9992" }}>Prix demandé (vendeur)</label>
+          <div className="relative">
+            <input type="text" inputMode="numeric" value={purchasePrice ? purchasePrice.toLocaleString("fr-FR") : ""}
+              onFocus={(e) => e.target.select()}
+              onChange={(e) => setPurchasePrice(Number(e.target.value.replace(/[^\d]/g, "")) || 0)}
+              placeholder="0"
+              className="w-full rounded-xl pl-4 pr-11 py-3.5 text-[26px] ap-display font-bold outline-none"
+              style={{ background: "#0B0F0D", border: `1px solid ${incompleteInput ? "#E8A33D66" : "#232E29"}`, color: "#EDF2EF" }} />
+            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[22px] font-bold" style={{ color: "#6B776F" }}>€</span>
           </div>
+          {incompleteInput ? (
+            <p className="text-[11px] mt-2" style={{ color: "#E8A33D" }}>Saisie incomplète — renseigne un prix réaliste (≥ 100 €) pour voir le calcul de marge.</p>
+          ) : (
+            <div className="flex items-center justify-between mt-3">
+              <span className="text-[12px]" style={{ color: "#8C9992" }}>Prix max conseillé</span>
+              <span className="ap-display text-[15px] font-bold" style={{ color: underAsking ? "#22C55E" : "#E8A33D" }}>{currency(suggested)}</span>
+            </div>
+          )}
+        </Card>
 
+        {/* D. ÉTAT DU VÉHICULE — toggles avec impact affiché */}
+        <div className="grid grid-cols-2 gap-2.5">
+          <button onClick={() => go("damage")} className="rounded-xl py-3 px-2 text-center" style={{ background: "#141C18", border: `1px solid ${photosCount > 0 ? "#E5484D55" : "#232E29"}` }}>
+            <div className="text-[12px] font-semibold" style={{ color: "#EDF2EF" }}>📸 Dégâts esthétiques</div>
+            <div className="text-[12px] font-bold mt-0.5" style={{ color: photosCount > 0 ? "#E5484D" : "#6B776F" }}>
+              {photosCount > 0 ? `-${currency(photosRepairMid)}` : "Aucun signalé"}
+            </div>
+          </button>
+          <button onClick={() => go("problems")} className="rounded-xl py-3 px-2 text-center" style={{ background: "#141C18", border: `1px solid ${problemsCount > 0 ? "#E5484D55" : "#232E29"}` }}>
+            <div className="text-[12px] font-semibold" style={{ color: "#EDF2EF" }}>🔧 Problème mécanique</div>
+            <div className="text-[12px] font-bold mt-0.5" style={{ color: problemsCount > 0 ? "#E5484D" : "#6B776F" }}>
+              {problemsCount > 0 ? `-${currency(problemsRepairMid)}` : "Aucun signalé"}
+            </div>
+          </button>
+        </div>
+
+        {/* E. BREAKDOWN DES COÛTS */}
+        <Card className="p-5">
+          <div className="text-[12px] font-semibold mb-3" style={{ color: "#8C9992" }}>DÉTAIL DU CALCUL</div>
+
+          <div className="flex items-center justify-between py-1.5">
+            <span className="text-[13px]" style={{ color: "#8C9992" }}>Prix de marché initial</span>
+            <span className="ap-display text-[13px]" style={{ color: "#EDF2EF" }}>{currency(vehicle.market)}</span>
+          </div>
           {(repairCosts > 0 || riskDiscount > 0) && (
-            <div className="rounded-xl px-4 py-3 mb-4" style={{ background: "#0B0F0D", border: "1px solid #232E29" }}>
-              <div className="flex items-center justify-between text-[12px] mb-1">
-                <span style={{ color: "#8C9992" }}>Valeur avant problèmes</span>
-                <span className="ap-display" style={{ color: "#EDF2EF" }}>{currency(valuation.beforeProblems)}</span>
+            <div className="flex items-center justify-between py-1.5">
+              <span className="text-[13px]" style={{ color: "#8C9992" }}>Réparations + décote de risque</span>
+              <span className="ap-display text-[13px]" style={{ color: "#E5484D" }}>-{currency(repairCosts + riskDiscount)}</span>
+            </div>
+          )}
+
+          {/* Carte grise, avec toggle Pro/Particulier */}
+          <div className="flex items-center justify-between py-1.5">
+            <span className="text-[13px]" style={{ color: "#8C9992" }}>Frais de carte grise</span>
+            <span className="ap-display text-[13px]" style={{ color: "#EDF2EF" }}>{currency(carteGrise.total)}</span>
+          </div>
+          <div className="flex items-center justify-between pl-3 py-1.5">
+            <select value={cgRegion} onChange={(e) => setCgRegion(e.target.value)}
+              className="rounded-lg px-2 py-1.5 text-[11px] outline-none appearance-none"
+              style={{ background: "#0B0F0D", border: "1px solid #232E29", color: "#EDF2EF" }}>
+              {CARTE_GRISE_REGIONS.map((r) => (<option key={r} value={r}>{r}</option>))}
+            </select>
+            <button onClick={() => setCgDetailOpen(!cgDetailOpen)} className="text-[10px] underline" style={{ color: "#6B776F" }}>détail</button>
+          </div>
+          <div className="flex items-center justify-between pl-3 py-2">
+            <span className="text-[12px] font-medium" style={{ color: "#EDF2EF" }}>Statut professionnel (achat-revente)</span>
+            <button
+              onClick={() => setCgIsPro(!cgIsPro)}
+              className="relative shrink-0"
+              style={{ width: 42, height: 24, borderRadius: 999, background: cgIsPro ? "#22C55E" : "#2B372F", transition: "background 0.2s" }}
+            >
+              <div
+                className="absolute rounded-full"
+                style={{ width: 18, height: 18, top: 3, left: cgIsPro ? 21 : 3, background: "#0B0F0D", transition: "left 0.2s" }}
+              />
+            </button>
+          </div>
+          {cgDetailOpen && (
+            <div className="ml-3 mb-1 rounded-xl px-3 py-2.5" style={{ background: "#0B0F0D", border: "1px solid #232E29" }}>
+              <div className="flex items-center justify-between text-[11px] py-0.5">
+                <span style={{ color: "#8C9992" }}>Taxe régionale (Y1) — {vehicle.fiscalPower} CV{cgIsPro ? " · pro" : cgIsElectric ? " · exonérée" : cgIsOld ? " · −50%, >10 ans" : ""}</span>
+                <span className="ap-display" style={{ color: "#EDF2EF" }}>{currency2(carteGrise.y1)}</span>
               </div>
-              <div className="flex items-center justify-between text-[12px] mb-1">
-                <span style={{ color: "#8C9992" }}>Réparations + décote de risque</span>
-                <span className="ap-display" style={{ color: "#E5484D" }}>-{currency(repairCosts + riskDiscount)}</span>
+              <div className="flex items-center justify-between text-[11px] py-0.5">
+                <span style={{ color: "#8C9992" }}>Taxes ANTS{cgIsPro ? " — pro" : ""}</span>
+                <span className="ap-display" style={{ color: "#EDF2EF" }}>{currency2(carteGrise.antsFees)}</span>
               </div>
-              <div className="flex items-center justify-between text-[13px] font-semibold pt-1.5 mt-1" style={{ borderTop: "1px solid #1E2822" }}>
-                <span style={{ color: "#EDF2EF" }}>Valeur ajustée</span>
-                <span className="ap-display" style={{ color: "#EDF2EF" }}>{currency(valuation.adjustedValue)}</span>
+              <div className="flex items-center justify-between text-[11px] py-0.5">
+                <span style={{ color: "#8C9992" }}>Frais de dossier {cgIsPro ? "— pro (0 €)" : "(30 € en moyenne)"}</span>
+                <span className="ap-display" style={{ color: "#EDF2EF" }}>{currency2(carteGrise.serviceFee)}</span>
               </div>
             </div>
           )}
 
-          {/* Carte grise synthétique */}
-          <div className="pt-1">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[12px] font-semibold" style={{ color: "#8C9992" }}>CARTE GRISE</span>
-              <button onClick={() => setCgIsPro(!cgIsPro)} className="flex items-center gap-1.5">
-                <div className="w-4 h-4 rounded flex items-center justify-center" style={{ background: cgIsPro ? "#3FBF7F" : "transparent", border: cgIsPro ? "none" : "1px solid #2B372F" }}>
-                  {cgIsPro && <CheckCircle2 size={11} color="#08120D" />}
-                </div>
-                <span className="text-[11px] font-medium" style={{ color: cgIsPro ? "#3FBF7F" : "#8C9992" }}>Pro (achat-revente)</span>
-              </button>
-            </div>
-            <div className="flex gap-2 mb-2">
-              <select value={cgRegion} onChange={(e) => setCgRegion(e.target.value)}
-                className="flex-1 rounded-xl px-3 py-2.5 text-[12px] outline-none appearance-none"
-                style={{ background: "#0B0F0D", border: "1px solid #232E29", color: "#EDF2EF" }}>
-                {CARTE_GRISE_REGIONS.map((r) => (<option key={r} value={r}>{r}</option>))}
-              </select>
-              <div className="rounded-xl px-4 py-2.5 flex items-center justify-center" style={{ background: "#0B0F0D", border: "1px solid #232E29" }}>
-                <span className="ap-display text-[14px] font-semibold" style={{ color: "#EDF2EF" }}>{currency2(carteGrise.total)}</span>
-              </div>
-            </div>
-            <button onClick={() => setCgDetailOpen(!cgDetailOpen)} className="flex items-center gap-1 text-[11px]" style={{ color: "#6B776F" }}>
-              {cgDetailOpen ? "Masquer le détail" : "Voir le détail des taxes"}
-              <ChevronRight size={12} style={{ transform: cgDetailOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
-            </button>
-            {cgDetailOpen && (
-              <div className="mt-2 rounded-xl px-4 py-3" style={{ background: "#0B0F0D", border: "1px solid #232E29" }}>
-                <div className="flex items-center justify-between text-[12px] py-1">
-                  <span style={{ color: "#8C9992" }}>Taxe régionale (Y1){cgIsPro ? " — pro" : cgIsElectric ? " — exonérée" : cgIsOld ? " — −50%, >10 ans" : ""}</span>
-                  <span className="ap-display" style={{ color: "#EDF2EF" }}>{currency2(carteGrise.y1)}</span>
-                </div>
-                <div className="flex items-center justify-between text-[12px] py-1">
-                  <span style={{ color: "#8C9992" }}>Taxes ANTS{cgIsPro ? " — pro" : ""}</span>
-                  <span className="ap-display" style={{ color: "#EDF2EF" }}>{currency2(carteGrise.antsFees)}</span>
-                </div>
-                <div className="flex items-center justify-between text-[12px] py-1">
-                  <span style={{ color: "#8C9992" }}>Frais de dossier {cgIsPro ? "— pro (0 €)" : "(30 € en moyenne)"}</span>
-                  <span className="ap-display" style={{ color: "#EDF2EF" }}>{currency2(carteGrise.serviceFee)}</span>
-                </div>
-                {cgIsPro && <p className="text-[11px] mt-1" style={{ color: "#3FBF7F" }}>0 € de taxes — statut professionnel.</p>}
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center justify-between pt-4 mt-4" style={{ borderTop: "1px solid #1E2822" }}>
+          <div className="flex items-center justify-between pt-3 mt-2" style={{ borderTop: "1px solid #1E2822" }}>
             <div>
-              <div className="text-[11px]" style={{ color: "#8C9992" }}>Coût total d'achat</div>
-              <div className="ap-display text-[17px] font-semibold" style={{ color: "#EDF2EF" }}>{currency(final.costTotal)}</div>
+              <div className="text-[11px]" style={{ color: "#8C9992" }}>Coût d'achat total</div>
+              <div className="ap-display text-[17px] font-bold" style={{ color: "#EDF2EF" }}>{incompleteInput ? "—" : currency(final.costTotal)}</div>
             </div>
             <ChevronRight size={16} color="#6B776F" />
             <div className="text-right">
               <div className="text-[11px]" style={{ color: "#8C9992" }}>Revente estimée</div>
-              <div className="ap-display text-[15px] font-semibold" style={{ color: "#EDF2EF" }}>{currency(resaleRange.min)} - {currency(resaleRange.max)}</div>
+              <div className="ap-display text-[15px] font-bold" style={{ color: "#EDF2EF" }}>{currency(resaleRange.min)} - {currency(resaleRange.max)}</div>
             </div>
           </div>
         </Card>
 
-        {/* BLOC 3 — FONDATIONS & PREUVES (onglets) */}
+        {/* Détails techniques — repliés par défaut pour ne pas surcharger l'écran */}
         <Card className="p-0 overflow-hidden">
-          <div className="flex" style={{ borderBottom: "1px solid #1E2822" }}>
-            <button onClick={() => setActiveTab("specs")} className="flex-1 py-3 text-[12px] font-semibold"
-              style={{ color: activeTab === "specs" ? "#3FBF7F" : "#6B776F", borderBottom: activeTab === "specs" ? "2px solid #3FBF7F" : "2px solid transparent" }}>
-              Fiche technique
-            </button>
-            <button onClick={() => setActiveTab("comparables")} className="flex-1 py-3 text-[12px] font-semibold"
-              style={{ color: activeTab === "comparables" ? "#3FBF7F" : "#6B776F", borderBottom: activeTab === "comparables" ? "2px solid #3FBF7F" : "2px solid transparent" }}>
-              Comparables
-            </button>
-          </div>
-
-          {activeTab === "specs" ? (
-            <div className="p-4">
-              <div className="flex items-center gap-1.5 mb-3">
-                <CheckCircle2 size={12} color="#3FBF7F" />
-                <span className="text-[11px] font-medium" style={{ color: "#3FBF7F" }}>Identification confirmée (démonstration)</span>
+          <button onClick={() => setDetailsOpen(!detailsOpen)} className="w-full flex items-center justify-between px-5 py-4">
+            <span className="flex items-center gap-2 text-[12px] font-semibold" style={{ color: "#8C9992" }}>
+              <FileText size={14} color="#8C9992" />
+              FICHE TECHNIQUE & COMPARABLES
+            </span>
+            <ChevronRight size={16} color="#6B776F" style={{ transform: detailsOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+          </button>
+          {detailsOpen && (
+            <>
+              <div className="flex" style={{ borderTop: "1px solid #1E2822", borderBottom: "1px solid #1E2822" }}>
+                <button onClick={() => setDetailsTab("specs")} className="flex-1 py-2.5 text-[12px] font-semibold"
+                  style={{ color: detailsTab === "specs" ? "#22C55E" : "#6B776F", borderBottom: detailsTab === "specs" ? "2px solid #22C55E" : "2px solid transparent" }}>
+                  Fiche technique
+                </button>
+                <button onClick={() => setDetailsTab("comparables")} className="flex-1 py-2.5 text-[12px] font-semibold"
+                  style={{ color: detailsTab === "comparables" ? "#22C55E" : "#6B776F", borderBottom: detailsTab === "comparables" ? "2px solid #22C55E" : "2px solid transparent" }}>
+                  Comparables
+                </button>
               </div>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
-                {[
-                  ["Année", vehicle.year], ["Kilométrage", `${vehicle.km.toLocaleString("fr-FR")} km`],
-                  ["Boîte", vehicle.gearbox], ["Carburant", vehicle.fuel],
-                  ["Chevaux fiscaux", `${vehicle.fiscalPower} CV`], ["Puissance", `${vehicle.power} ch`],
-                  ["Places", vehicle.seats], ["Carrosserie", `${vehicle.body}, ${vehicle.doors}p`],
-                ].map(([label, value]) => (
-                  <div key={label}>
-                    <div className="text-[10px]" style={{ color: "#6B776F" }}>{label}</div>
-                    <div className="text-[13px] font-medium" style={{ color: "#EDF2EF" }}>{value}</div>
+              {detailsTab === "specs" ? (
+                <div className="p-4">
+                  <div className="flex items-center gap-1.5 mb-3">
+                    <CheckCircle2 size={12} color="#22C55E" />
+                    <span className="text-[11px] font-medium" style={{ color: "#22C55E" }}>Identification confirmée (démonstration)</span>
                   </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="p-4">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[12px]" style={{ color: "#EDF2EF" }}>{marketData.count} comparables · médiane {currency(marketData.median)}</span>
-                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md" style={{ color: marketData.confidence === "élevée" ? "#3FBF7F" : marketData.confidence === "moyenne" ? "#E8A33D" : "#E5484D", background: "#0B0F0D" }}>
-                  {marketData.confidence}
-                </span>
-              </div>
-              <div className="space-y-2">
-                {marketData.comparables.map((c, i) => (
-                  <div key={i} className="flex items-center justify-between py-1.5" style={{ borderTop: i > 0 ? "1px solid #1E2822" : "none" }}>
-                    <div className="min-w-0">
-                      <div className="text-[12px] truncate" style={{ color: "#EDF2EF" }}>{c.label} — {c.year}</div>
-                      <div className="flex items-center gap-1 text-[10px]" style={{ color: "#6B776F" }}><MapPin size={10} /> {c.location} · {c.km.toLocaleString("fr-FR")} km</div>
-                    </div>
-                    <span className="ap-display text-[12px] font-semibold shrink-0" style={{ color: "#EDF2EF" }}>{currency(c.price)}</span>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
+                    {[
+                      ["Année", vehicle.year], ["Kilométrage", `${vehicle.km.toLocaleString("fr-FR")} km`],
+                      ["Boîte", vehicle.gearbox], ["Carburant", vehicle.fuel],
+                      ["Chevaux fiscaux", `${vehicle.fiscalPower} CV`], ["Puissance", `${vehicle.power} ch`],
+                      ["Places", vehicle.seats], ["Carrosserie", `${vehicle.body}, ${vehicle.doors}p`],
+                    ].map(([label, value]) => (
+                      <div key={label}>
+                        <div className="text-[10px]" style={{ color: "#6B776F" }}>{label}</div>
+                        <div className="text-[13px] font-medium" style={{ color: "#EDF2EF" }}>{value}</div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-              <p className="text-[10px] mt-2" style={{ color: "#6B776F" }}>Exemples simulés en mode démonstration.</p>
-            </div>
+                </div>
+              ) : (
+                <div className="p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[12px]" style={{ color: "#EDF2EF" }}>{marketData.count} comparables · médiane {currency(marketData.median)}</span>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md" style={{ color: marketData.confidence === "élevée" ? "#22C55E" : marketData.confidence === "moyenne" ? "#E8A33D" : "#E5484D", background: "#0B0F0D" }}>
+                      {marketData.confidence}
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {marketData.comparables.map((c, i) => (
+                      <div key={i} className="flex items-center justify-between py-1.5" style={{ borderTop: i > 0 ? "1px solid #1E2822" : "none" }}>
+                        <div className="min-w-0">
+                          <div className="text-[12px] truncate" style={{ color: "#EDF2EF" }}>{c.label} — {c.year}</div>
+                          <div className="flex items-center gap-1 text-[10px]" style={{ color: "#6B776F" }}><MapPin size={10} /> {c.location} · {c.km.toLocaleString("fr-FR")} km</div>
+                        </div>
+                        <span className="ap-display text-[12px] font-semibold shrink-0" style={{ color: "#EDF2EF" }}>{currency(c.price)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-[10px] mt-2" style={{ color: "#6B776F" }}>Exemples simulés en mode démonstration.</p>
+                </div>
+              )}
+            </>
           )}
         </Card>
       </div>
 
-      {/* STICKY BOTTOM BAR */}
-      <div className="fixed left-0 right-0 px-5 py-3" style={{ bottom: 64, background: "rgba(11,15,13,0.95)", backdropFilter: "blur(10px)", borderTop: "1px solid #1E2822" }}>
+      {/* F. CTA — sticky */}
+      <div className="fixed left-0 right-0 px-5 py-3" style={{ bottom: 64, background: "rgba(15,23,21,0.95)", backdropFilter: "blur(10px)", borderTop: "1px solid #1E2822" }}>
         <div className="max-w-md mx-auto">
-          <PrimaryButton onClick={() => { onSave(final); go("history"); }}>Enregistrer cette analyse</PrimaryButton>
+          <PrimaryButton onClick={() => { onSave(final); go("history"); }} disabled={incompleteInput} style={{ fontWeight: 900, color: "#04140C" }}>
+            Enregistrer cette analyse
+          </PrimaryButton>
         </div>
       </div>
     </div>
@@ -1134,31 +1192,59 @@ function DamageScreen({ go, photos, setPhotos }) {
   );
 }
 
-function HistoryScreen({ go, history, onDelete }) {
+function HistoryScreen({ go, authToken }) {
+  const [history, setHistory] = useState(null); // null = chargement en cours
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!authToken) { setHistory([]); return; }
+    apiFetch("/api/vehicle/analyses", { token: authToken })
+      .then((rows) => setHistory(rows))
+      .catch((e) => { setError(e.message); setHistory([]); });
+  }, [authToken]);
+
   return (
     <div className="pb-24">
       <Header title="Mes analyses" />
       <div className="px-5 space-y-3">
-        {history.length === 0 && (
+        <DemoBanner text="Suivi réel : chaque analyse enregistrée reste ici, même si tu fermes l'app ou changes d'appareil." />
+
+        {history === null && (
+          <Card className="p-8 text-center">
+            <p className="text-[13px]" style={{ color: "#8C9992" }}>Chargement de ton historique...</p>
+          </Card>
+        )}
+
+        {history !== null && error && (
+          <Card className="p-8 text-center">
+            <AlertTriangle size={22} color="#E8A33D" className="mx-auto mb-2" />
+            <p className="text-[13px]" style={{ color: "#8C9992" }}>Impossible de charger l'historique pour l'instant. Réessaie plus tard.</p>
+          </Card>
+        )}
+
+        {history !== null && !error && history.length === 0 && (
           <Card className="p-8 text-center">
             <HistoryIcon size={26} color="#3FBF7F" className="mx-auto mb-3" />
             <p className="text-[14px]" style={{ color: "#8C9992" }}>Aucune analyse enregistrée pour l'instant.</p>
           </Card>
         )}
-        {history.map((h, i) => {
-          const meta = VERDICT_META[h.verdict];
+
+        {history !== null && history.map((h) => {
+          const meta = VERDICT_META[h.verdict] || VERDICT_META.negotiate;
+          const purchasePrice = Number(h.purchase_price);
+          const margin = Number(h.margin);
           return (
-            <Card key={i} className="p-4">
+            <Card key={h.id} className="p-4">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-[14px] font-semibold" style={{ color: "#EDF2EF" }}>{h.name}</span>
-                <button onClick={() => onDelete(i)}><Trash2 size={15} color="#6B776F" /></button>
+                <span className="text-[14px] font-semibold" style={{ color: "#EDF2EF" }}>{h.vehicle_name}</span>
+                {h.plate && <span className="text-[11px]" style={{ color: "#6B776F" }}>{h.plate}</span>}
               </div>
               <div className="flex items-center justify-between text-[13px] mb-1" style={{ color: "#8C9992" }}>
-                <span>Achat : {currency(h.purchasePrice)}</span>
-                <span className="ap-display font-semibold" style={{ color: h.margin >= 0 ? "#3FBF7F" : "#E5484D" }}>{h.margin >= 0 ? "+" : ""}{currency(h.margin)}</span>
+                <span>Achat : {currency(purchasePrice)}</span>
+                <span className="ap-display font-semibold" style={{ color: margin >= 0 ? "#3FBF7F" : "#E5484D" }}>{margin >= 0 ? "+" : ""}{currency(margin)}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-[12px]" style={{ color: "#6B776F" }}>{h.date}</span>
+                <span className="text-[12px]" style={{ color: "#6B776F" }}>{new Date(h.created_at).toLocaleDateString("fr-FR")}</span>
                 <div className="flex items-center gap-1.5 rounded-full px-2.5 py-1" style={{ background: meta.bg }}>
                   <meta.Icon size={12} color={meta.color} />
                   <span className="text-[11px] font-semibold" style={{ color: meta.color }}>{h.score}/100 · {meta.label}</span>
@@ -1512,6 +1598,14 @@ function ProfileScreen({ go, isPremium, setIsPremium, authUser, authToken, authL
           <GhostButton onClick={() => { setMode(mode === "login" ? "signup" : "login"); setError(""); }}>
             {mode === "login" ? "Créer un compte" : "J'ai déjà un compte"}
           </GhostButton>
+
+          <button
+            onClick={() => onLogin("apercu@demo.local", false, "apercu-local-pas-un-vrai-token")}
+            className="w-full text-center text-[12px] underline mt-2"
+            style={{ color: "#6B776F" }}
+          >
+            🔍 Explorer l'app sans se connecter (aperçu design — aucune donnée réelle)
+          </button>
         </div>
       </div>
     );
@@ -1748,21 +1842,27 @@ export default function AutoProfit() {
   const limitReached = !isPremium && weeklyUsed >= FREE_WEEKLY_LIMIT;
 
   const repairRange = useMemo(() => {
-    let min = 0, max = 0;
+    let problemsMin = 0, problemsMax = 0;
     Object.entries(problems).forEach(([name, sevKey]) => {
       const est = aiEstimates[name];
       if (est && !est.loading && typeof est.minCost === "number") {
-        min += est.minCost;
-        max += est.maxCost;
+        problemsMin += est.minCost;
+        problemsMax += est.maxCost;
       } else {
         const sev = SEVERITY_LEVELS.find((s) => s.key === sevKey);
         const base = PROBLEM_BASE_COST[name] ?? 500;
-        min += Math.round(base * sev.mult * 0.8);
-        max += Math.round(base * sev.mult * 1.2);
+        problemsMin += Math.round(base * sev.mult * 0.8);
+        problemsMax += Math.round(base * sev.mult * 1.2);
       }
     });
-    photos.forEach((p) => { min += p.min; max += p.max; });
-    return { min, max };
+    let photosMin = 0, photosMax = 0;
+    photos.forEach((p) => { photosMin += p.min; photosMax += p.max; });
+    return {
+      min: problemsMin + photosMin,
+      max: problemsMax + photosMax,
+      problemsMid: Math.round((problemsMin + problemsMax) / 2),
+      photosMid: Math.round((photosMin + photosMax) / 2),
+    };
   }, [problems, photos, aiEstimates]);
   const repairCostsMin = repairRange.min;
   const repairCostsMax = repairRange.max;
@@ -1840,13 +1940,15 @@ export default function AutoProfit() {
       {screen === "result" && vehicle && (
         <ResultScreen vehicle={vehicle} marketData={marketData} go={go} purchasePrice={purchasePrice} setPurchasePrice={setPurchasePrice}
           repairCosts={repairCosts} repairCostsMin={repairCostsMin} repairCostsMax={repairCostsMax} riskDiscount={riskDiscount} onSave={handleSave}
-          cgRegion={cgRegion} setCgRegion={setCgRegion} cgIsPro={cgIsPro} setCgIsPro={setCgIsPro} />
+          cgRegion={cgRegion} setCgRegion={setCgRegion} cgIsPro={cgIsPro} setCgIsPro={setCgIsPro}
+          problemsCount={Object.keys(problems).length} problemsRepairMid={repairRange.problemsMid}
+          photosCount={photos.length} photosRepairMid={repairRange.photosMid} />
       )}
       {screen === "problems" && (
         <ProblemsScreen go={go} selected={problems} setSelected={setProblems} vehicle={vehicle} aiEstimates={aiEstimates} setAiEstimate={setAiEstimate} />
       )}
       {screen === "damage" && <DamageScreen go={go} photos={photos} setPhotos={setPhotos} />}
-      {screen === "history" && <HistoryScreen go={go} history={history} onDelete={(i) => setHistory(history.filter((_, idx) => idx !== i))} />}
+      {screen === "history" && <HistoryScreen go={go} authToken={authToken} />}
       {screen === "premium" && <PremiumScreen go={go} isPremium={isPremium} setIsPremium={setIsPremium} />}
       {screen === "payment" && <PaymentScreen go={go} setIsPremium={setIsPremium} />}
       {screen === "profile" && (
