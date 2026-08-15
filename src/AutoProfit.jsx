@@ -236,47 +236,18 @@ function currency(n) {
 
 // Pour un problème saisi librement par l'utilisateur : l'IA lit la description
 // et détermine elle-même la gravité (pas de bouton pré-sélectionné par défaut).
-async function getAiEstimateFromDescription(description, vehicle) {
-  const prompt = `Tu es un expert automobile en France. Un acheteur envisage ce véhicule : ${vehicle.name}, ${vehicle.year}, ${vehicle.km} km, moteur ${vehicle.fuel} ${vehicle.power}ch (${vehicle.fiscalPower} CV fiscaux), boîte ${vehicle.gearbox}.
-L'utilisateur décrit ce problème avec ses propres mots : "${description}".
-Étudie cette description et détermine toi-même la gravité la plus probable, une fourchette de coût de réparation RÉALISTE en France (ne surestime jamais), et une décote de risque.
-
-Repères de calibration à respecter strictement :
-- Un pneu simplement dégonflé (pas crevé, pas usé) : gonflage gratuit ou quelques euros, gravité "léger", coût proche de 0 €.
-- Un pneu crevé réparable (bouchon/mèche) : 15-30 €.
-- Un pneu à changer (usé, hernie) : 80-150 € pièce.
-- Un voyant allumé sans autre précision, une petite rayure, une ampoule grillée, un balai d'essuie-glace : quelques dizaines d'euros maximum, gravité "léger".
-- Ne choisis "important" ou "critique" que si la description implique clairement une panne mécanique/moteur/boîte sérieuse.
-- N'invente jamais un problème plus grave que ce que l'utilisateur décrit réellement.
-
-Réponds UNIQUEMENT avec un objet JSON, sans texte autour, sans balises markdown, au format exact :
-{"severity": "<léger|modéré|important|critique>", "minCost": <euros, entier>, "maxCost": <euros, entier>, "riskPct": <décote de risque en fraction de la valeur du véhicule, ex 0.02 pour 2%, entre 0 et 0.1>, "explanation": "<1 phrase en français expliquant l'estimation et la gravité retenue, max 30 mots>"}`;
-
+// L'appel réel à Claude se fait côté backend (clé API jamais exposée dans l'app).
+async function getAiEstimateFromDescription(description, vehicle, token) {
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    if (!token) throw new Error("Non authentifié");
+    const data = await apiFetch("/api/vehicle/problem-estimate", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 300,
-        messages: [{ role: "user", content: prompt }],
-      }),
+      token,
+      body: { description, vehicle },
     });
-    const data = await response.json();
-    const text = (data.content || []).map((b) => b.text || "").join("").replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(text);
-    if (typeof parsed.minCost !== "number" || typeof parsed.maxCost !== "number") throw new Error("format invalide");
-    const sevMatch = SEVERITY_LEVELS.find((s) => s.label.toLowerCase() === String(parsed.severity || "").toLowerCase()) || SEVERITY_LEVELS[1];
-    return {
-      minCost: Math.max(0, Math.round(parsed.minCost)),
-      maxCost: Math.max(0, Math.round(parsed.maxCost)),
-      riskPct: Math.max(0, Math.min(0.1, parsed.riskPct ?? sevMatch.riskPct)),
-      explanation: parsed.explanation || "",
-      severityKey: sevMatch.key,
-      source: "ai",
-    };
+    return { ...data, source: "ai" };
   } catch (e) {
-    // Fallback : gravité modérée par défaut si l'IA échoue
+    // Fallback : gravité modérée par défaut si l'IA échoue ou si non connecté
     const sev = SEVERITY_LEVELS[1];
     return {
       minCost: 300, maxCost: 900, riskPct: sev.riskPct,
@@ -285,6 +256,17 @@ Réponds UNIQUEMENT avec un objet JSON, sans texte autour, sans balises markdown
       source: "fallback",
     };
   }
+}
+
+// Pour une photo de dégât : l'IA identifie la pièce concernée, la gravité et
+// une fourchette de réparation réaliste. Appel backend (vision), jamais direct.
+async function getPhotoDamageEstimate(imageBase64, mediaType, vehicle, token) {
+  if (!token) throw new Error("Non authentifié");
+  return apiFetch("/api/vehicle/photo-estimate", {
+    method: "POST",
+    token,
+    body: { imageBase64, mediaType, vehicle },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1007,7 +989,7 @@ function ResultScreen({ vehicle, marketData, go, purchasePrice, setPurchasePrice
   );
 }
 
-function ProblemsScreen({ go, selected, setSelected, vehicle, aiEstimates, setAiEstimate }) {
+function ProblemsScreen({ go, selected, setSelected, vehicle, aiEstimates, setAiEstimate, authToken }) {
   const [customName, setCustomName] = useState("");
 
   const remove = (name) => {
@@ -1021,7 +1003,7 @@ function ProblemsScreen({ go, selected, setSelected, vehicle, aiEstimates, setAi
     const name = customName.trim();
     setSelected({ ...selected, [name]: "modere" });
     setAiEstimate(name, { loading: true });
-    getAiEstimateFromDescription(name, vehicle).then((est) => {
+    getAiEstimateFromDescription(name, vehicle, authToken).then((est) => {
       setAiEstimate(name, { ...est, loading: false });
       setSelected((prev) => ({ ...prev, [name]: est.severityKey }));
     });
@@ -1094,9 +1076,10 @@ function ProblemsScreen({ go, selected, setSelected, vehicle, aiEstimates, setAi
   );
 }
 
-function DamageScreen({ go, photos, setPhotos }) {
+function DamageScreen({ go, photos, setPhotos, vehicle, authToken }) {
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraError, setCameraError] = useState("");
+  const [analyzing, setAnalyzing] = useState(false);
   const videoRef = useRef(null);
   const streamRef = useRef(null);
 
@@ -1123,10 +1106,41 @@ function DamageScreen({ go, photos, setPhotos }) {
     };
   }, [cameraOpen]);
 
-  const addPhoto = () => {
+  // Ajout manuel (sans photo réelle) : reste en mode démonstration.
+  const addPhotoManually = () => {
     const next = DAMAGE_POOL[photos.length % DAMAGE_POOL.length];
     setPhotos([...photos, next]);
   };
+
+  // Capture la frame vidéo actuelle et l'envoie au backend pour une vraie
+  // analyse IA (vision). Retombe sur une entrée simulée si la caméra ou
+  // l'analyse échoue, pour ne jamais bloquer l'utilisateur.
+  const capturePhoto = async () => {
+    if (cameraError || !videoRef.current || !videoRef.current.videoWidth) {
+      addPhotoManually();
+      return;
+    }
+    const video = videoRef.current;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d").drawImage(video, 0, 0);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    const imageBase64 = dataUrl.split(",")[1];
+
+    setAnalyzing(true);
+    try {
+      const result = await getPhotoDamageEstimate(imageBase64, "image/jpeg", vehicle, authToken);
+      setPhotos([...photos, result]);
+      setCameraOpen(false);
+    } catch (e) {
+      addPhotoManually();
+      setCameraOpen(false);
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
   const totalMin = photos.reduce((s, p) => s + p.min, 0);
   const totalMax = photos.reduce((s, p) => s + p.max, 0);
   const levelColor = { orange: "#E8A33D", yellow: "#D4C24A", red: "#E5484D" };
@@ -1157,13 +1171,15 @@ function DamageScreen({ go, photos, setPhotos }) {
             </div>
             {!cameraError && (
               <p className="text-[11px] text-center leading-snug" style={{ color: "#6B776F" }}>
-                La caméra s'active réellement, mais l'analyse visuelle des dégâts (vision IA) n'est pas encore branchée — capture, puis l'app simule un diagnostic.
+                Prends une photo nette du dégât — l'IA identifie la pièce concernée, la gravité et une fourchette de réparation.
               </p>
             )}
-            <PrimaryButton onClick={addPhoto}>{cameraError ? "Simuler une photo" : "Capturer et analyser"}</PrimaryButton>
+            <PrimaryButton onClick={cameraError ? addPhotoManually : capturePhoto} disabled={analyzing}>
+              {analyzing ? "Analyse en cours..." : cameraError ? "Simuler une photo" : "Capturer et analyser"}
+            </PrimaryButton>
           </Card>
         )}
-        <GhostButton onClick={addPhoto}>+ Ajouter une photo manuellement</GhostButton>
+        <GhostButton onClick={addPhotoManually}>+ Ajouter une photo manuellement</GhostButton>
         {photos.map((p, i) => (
           <Card key={i} className="p-4 flex items-center gap-4">
             <div className="w-11 h-11 rounded-xl shrink-0" style={{ background: "#1B2420" }} />
@@ -1945,9 +1961,9 @@ export default function AutoProfit() {
           photosCount={photos.length} photosRepairMid={repairRange.photosMid} />
       )}
       {screen === "problems" && (
-        <ProblemsScreen go={go} selected={problems} setSelected={setProblems} vehicle={vehicle} aiEstimates={aiEstimates} setAiEstimate={setAiEstimate} />
+        <ProblemsScreen go={go} selected={problems} setSelected={setProblems} vehicle={vehicle} aiEstimates={aiEstimates} setAiEstimate={setAiEstimate} authToken={authToken} />
       )}
-      {screen === "damage" && <DamageScreen go={go} photos={photos} setPhotos={setPhotos} />}
+      {screen === "damage" && <DamageScreen go={go} photos={photos} setPhotos={setPhotos} vehicle={vehicle} authToken={authToken} />}
       {screen === "history" && <HistoryScreen go={go} authToken={authToken} />}
       {screen === "premium" && <PremiumScreen go={go} isPremium={isPremium} setIsPremium={setIsPremium} />}
       {screen === "payment" && <PaymentScreen go={go} setIsPremium={setIsPremium} />}
