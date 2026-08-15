@@ -657,6 +657,11 @@ function ScanScreen({ go, onAnalyze, isPremium, weeklyUsed, limitReached, authUs
   // motorisation -> carburant (sigle diesel sans ambiguïté), puissance -> CV
   // fiscaux (estimation par palier, corrigible). Jamais de faux positif si
   // aucune règle ne s'applique — le champ reste alors tel quel.
+  // Tant que l'utilisateur n'a pas lui-même modifié les CV fiscaux, l'estimation
+  // continue de suivre la puissance saisie (sinon elle se figerait dès le
+  // premier chiffre tapé, ex: "8" puis "86" resteraient bloqués sur l'estimation de "8").
+  const fiscalPowerAuto = useRef(true);
+
   const setField = (key, val) => {
     setForm((prev) => {
       const next = { ...prev, [key]: val };
@@ -664,8 +669,11 @@ function ScanScreen({ go, onAnalyze, isPremium, weeklyUsed, limitReached, authUs
         const inferredFuel = inferFuelFromMotorisation(val);
         if (inferredFuel) next.fuel = inferredFuel;
       }
-      if (key === "power" && !prev.fiscalPower) {
+      if (key === "power" && fiscalPowerAuto.current) {
         next.fiscalPower = estimateFiscalPower(val);
+      }
+      if (key === "fiscalPower") {
+        fiscalPowerAuto.current = false;
       }
       if (key === "brand" && val !== prev.brand) {
         next.model = "";
@@ -683,6 +691,7 @@ function ScanScreen({ go, onAnalyze, isPremium, weeklyUsed, limitReached, authUs
     setVinError("");
     try {
       const decoded = await decodeVin(vin.trim(), authToken);
+      if (decoded.power && fiscalPowerAuto.current) decoded.fiscalPower = estimateFiscalPower(decoded.power);
       setForm((prev) => ({ ...prev, ...decoded }));
       setVinFilled(true);
       setTab("manual");
@@ -839,7 +848,7 @@ function ScanScreen({ go, onAnalyze, isPremium, weeklyUsed, limitReached, authUs
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-[11px] font-medium block mb-1" style={{ color: "#8C9992" }}>
-                  CV fiscaux {form.power && form.fiscalPower === estimateFiscalPower(form.power) && <span style={{ color: "#6B776F", fontWeight: 400 }}>(estimé)</span>}
+                  CV fiscaux {form.power && fiscalPowerAuto.current && <span style={{ color: "#6B776F", fontWeight: 400 }}>(estimé)</span>}
                 </label>
                 <input type="number" inputMode="numeric" value={form.fiscalPower} onChange={(e) => setField("fiscalPower", e.target.value)} placeholder="4" className={fieldClass} style={inputStyle} />
               </div>
