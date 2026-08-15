@@ -1121,11 +1121,16 @@ function DamageScreen({ go, photos, setPhotos, vehicle, authToken }) {
       return;
     }
     const video = videoRef.current;
+    // Une image plus grande ne rend pas l'analyse plus précise (identifier un
+    // dégât ne demande pas la haute résolution) mais coûte nettement plus cher
+    // en tokens IA — on plafonne donc le plus grand côté à 1024px.
+    const MAX_EDGE = 1024;
+    const scale = Math.min(1, MAX_EDGE / Math.max(video.videoWidth, video.videoHeight));
     const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext("2d").drawImage(video, 0, 0);
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
+    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
     const imageBase64 = dataUrl.split(",")[1];
 
     setAnalyzing(true);
